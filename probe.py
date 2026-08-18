@@ -9,7 +9,7 @@ from typing import Any
 
 SCHEMA = 1
 
-_EVIDENCE_FILES = (
+_V2_EVIDENCE_FILES = (
     'memory.max',
     'memory.current',
     'cpu.max',
@@ -17,6 +17,17 @@ _EVIDENCE_FILES = (
     'cpuset.cpus.effective',
     'cgroup.controllers',
 )
+
+_V1_EVIDENCE_FILES = (
+    'memory.limit_in_bytes',
+    'memory.usage_in_bytes',
+    'cpu.cfs_quota_us',
+    'cpu.cfs_period_us',
+    'cpuacct.usage',
+    'cpuset.cpus',
+)
+
+_V1_CONTROLLERS = ('memory', 'cpu', 'cpuacct', 'cpuset')
 
 _MAX_LEVELS = 20
 """How far up the cgroup chain the evidence dump walks. Deeper than any real hierarchy, so it only bounds a loop."""
@@ -60,26 +71,58 @@ def _read_control_file(path: Path) -> str | None:
         return None
 
 
+def _walk_levels(mount: Path, own_path: str, names: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Read the named control files at the process's own cgroup and at every level above it, leaf first."""
+    levels = []
+    directory = mount / own_path.lstrip('/') if '..' not in own_path else mount
+    for _ in range(_MAX_LEVELS):
+        files = {name: content for name in names if (content := _read_control_file(directory / name))}
+        levels.append({'path': str(directory), 'files': files})
+        if directory in (mount, directory.parent):
+            break
+        directory = directory.parent
+    return levels
+
+
 def _evidence() -> dict[str, Any]:
-    """Dump raw cgroup file contents along the chain, verbatim - receipts, not a verdict, never interpreted."""
+    """Dump raw cgroup file contents along the chain, verbatim - receipts, not a verdict, never interpreted.
+
+    Both cgroup versions are dumped the same way, from the standard mount points: the unified hierarchy sits at
+    /sys/fs/cgroup, while a v1 controller has a directory of its own under it. Resolving mounts properly is the
+    library's job, and this deliberately does not repeat it - the receipts only have to be readable next to the
+    values the library reported.
+    """
     evidence: dict[str, Any] = {'proc_cgroup': None, 'levels': []}
     try:
         evidence['proc_cgroup'] = Path('/proc/self/cgroup').read_text().strip()
     except OSError:
         return evidence
 
-    own_path = next((line[3:] for line in evidence['proc_cgroup'].splitlines() if line.startswith('0::')), None)
-    if own_path is None:
-        return evidence
-
     mount = Path('/sys/fs/cgroup')
-    directory = mount / own_path.lstrip('/') if '..' not in own_path else mount
-    for _ in range(_MAX_LEVELS):
-        files = {name: content for name in _EVIDENCE_FILES if (content := _read_control_file(directory / name))}
-        evidence['levels'].append({'path': str(directory), 'files': files})
-        if directory in (mount, directory.parent):
-            break
-        directory = directory.parent
+    seen: set[str] = set()
+
+    for line in evidence['proc_cgroup'].splitlines():
+        parts = line.split(':', 2)
+        if len(parts) != 3:
+            continue
+        _hierarchy_id, controllers, own_path = parts
+
+        if not controllers:
+            levels = _walk_levels(mount, own_path, _V2_EVIDENCE_FILES)
+        else:
+            # A v1 line can name several controllers sharing one mount, as `cpu,cpuacct` usually does.
+            names = [name for name in controllers.split(',') if name in _V1_CONTROLLERS]
+            levels = [
+                level
+                for name in names
+                for level in _walk_levels(mount / name, own_path, _V1_EVIDENCE_FILES)
+            ]
+
+        for level in levels:
+            if level['path'] not in seen:
+                seen.add(level['path'])
+                evidence['levels'].append(level)
+
     return evidence
 
 

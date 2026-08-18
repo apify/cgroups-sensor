@@ -17,6 +17,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 cpuset_list() { [ "$BENCH_CPUS" -le 1 ] && echo '0' || echo "0-$((BENCH_CPUS - 1))"; }
 
 have_engine() { "$ENGINE" info >/dev/null 2>&1; }
+# True when the unified hierarchy is the one carrying the controllers. Under cgroup v1 - and under the hybrid
+# layout, where a controller-less cgroup2 sits next to the v1 mounts - systemd puts resource limits only on
+# system units, and properties that exist solely for the unified hierarchy are accepted and then ignored.
+# Read it rather than test its size: every file in cgroupfs reports zero bytes, so -s is always false here.
+have_unified() { [ -n "$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)" ]; }
 have_sudo() { sudo -n true 2>/dev/null; }
 have_systemd_user() { systemd-run --user --scope -q true 2>/dev/null; }
 cgroup_driver() { "$ENGINE" info -f '{{.CgroupDriver}}' 2>/dev/null; }
@@ -31,6 +36,7 @@ unmet_requirement() {
       engine)       have_engine       || { echo "container engine '$ENGINE' is not available"; return; } ;;
       sudo)         have_sudo         || { echo "passwordless sudo is not available"; return; } ;;
       systemd-user) have_systemd_user || { echo "systemd user manager is not available"; return; } ;;
+      unified)      have_unified      || { echo "the controllers are not on the unified hierarchy, and systemd gives user scopes no cgroup of their own under cgroup v1"; return; } ;;
       systemd-driver)
         [ "$(cgroup_driver)" = systemd ] || { echo "$ENGINE uses the '$(cgroup_driver)' cgroup driver, this scenario needs 'systemd'"; return; } ;;
       kind)

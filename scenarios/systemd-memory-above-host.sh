@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 SCENARIO_DESC="a memory limit larger than the machine has RAM"
-REQUIRES="systemd-user"
+REQUIRES="systemd-user unified"
 INNER_STYLE=local
 
 # The memory twin of systemd-quota-above-host, and the axis where the library already guards itself: a limit at

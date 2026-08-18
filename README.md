@@ -29,6 +29,19 @@ Scenarios whose prerequisites are missing (docker, passwordless sudo, a systemd 
 cores) are recorded as `skipped` with the reason; only a crashed probe reddens a run. The `k8s-*` scenarios
 bring up a kind cluster named `cgroups-bench` and leave it running — `kind delete cluster --name cgroups-bench`.
 
+**cgroup v1** cannot be produced on a modern host: a controller belongs to one hierarchy at a time, and on a
+unified system it cannot be mounted as v1 even by root — inside a user namespace, not at all. So the v1 half of
+the library is reachable only from a guest kernel, which is what `./v1-guest.sh` does: it boots Ubuntu 22.04
+(systemd 249, the last releases that still honour the flags), runs the same scenarios inside and copies the
+results back into the same report. `V1_MODE` picks what the guest boots into — `hybrid` puts the v1 controllers
+next to a controller-less cgroup2, so the library has to notice the unified hierarchy is empty and fall back
+per controller, while `legacy` is plain v1. In the workflow both are the `cgroup_v1` input.
+
+It needs `qemu-system-x86 cloud-image-utils` and a usable `/dev/kvm` (`sudo usermod -aG kvm $USER` locally, a
+udev rule on a runner); `V1_ACCEL=tcg` emulates instead, which is slow but needs no privileges. The report's
+`v2` column says what the guest actually came up as, and a v1 host with no limit reports the sentinel that
+shows up in the table as `8.00 EB`.
+
 ## Files
 
 | file | what it does |
@@ -39,6 +52,7 @@ bring up a kind cluster named `cgroups-bench` and leave it running — `kind del
 | [probe.py](probe.py) | Runs inside the prepared environment and prints one JSON object with what Crawlee sees there. |
 | [wrap.py](wrap.py) | Folds the probe's output and the scenario's configuration into one result file. |
 | [report.py](report.py) | Turns a results directory into the tables. `--check` is the only gate. |
+| [v1-guest.sh](v1-guest.sh) | Boots a guest on cgroup v1 and runs the bench inside it, bringing the results back. |
 | [.github/workflows/bench.yaml](.github/workflows/bench.yaml) | Manual trigger only, one job per CPU budget. |
 
 ## Scenarios

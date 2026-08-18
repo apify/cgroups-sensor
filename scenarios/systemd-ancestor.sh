@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 SCENARIO_DESC="limit on an ancestor, leaf without memory controller files"
-REQUIRES="systemd-user"
+REQUIRES="systemd-user unified"
 INNER_STYLE=local
 
 SET_MEMORY_BYTES=$((512 * 1024 * 1024))

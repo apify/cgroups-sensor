@@ -6,16 +6,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_BYTES_PER_GB = 1024**3
-_BYTES_PER_MB = 1024**2
+_BYTE_UNITS = (('EB', 1024**6), ('PB', 1024**5), ('TB', 1024**4), ('GB', 1024**3), ('MB', 1024**2))
 
 
 def _bytes_h(value: Any) -> str:
+    """Format a byte count. The largest units only ever show up as the v1 sentinel for "no limit at all"."""
     if not isinstance(value, (int, float)):
         return '-'
-    if value >= _BYTES_PER_GB:
-        return f'{value / _BYTES_PER_GB:.2f} GB'
-    return f'{value / _BYTES_PER_MB:.2f} MB'
+    for unit, size in _BYTE_UNITS:
+        if value >= size:
+            return f'{value / size:.2f} {unit}'
+    return f'{value / _BYTE_UNITS[-1][1]:.2f} MB'
 
 
 def _num(value: Any) -> str:
