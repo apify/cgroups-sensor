@@ -21,6 +21,7 @@ have_sudo() { sudo -n true 2>/dev/null; }
 have_systemd_user() { systemd-run --user --scope -q true 2>/dev/null; }
 cgroup_driver() { "$ENGINE" info -f '{{.CgroupDriver}}' 2>/dev/null; }
 ncpus() { nproc 2>/dev/null || getconf _NPROCESSORS_ONLN; }
+mem_total_bytes() { awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo; }
 
 # Prints the first unmet requirement from $REQUIRES, or nothing when all are met.
 unmet_requirement() {
