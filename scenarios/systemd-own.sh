@@ -4,8 +4,11 @@ REQUIRES="sudo systemd-run min${BENCH_CPUS}cpu"
 INNER_STYLE=local
 
 # A system scope, not a user one: user slices do not delegate cpuset, so AllowedCPUs would be silently ignored.
-# The quota is a core looser than the cpuset here, the mirror of docker-private, where it is tighter.
+# The quota is a core looser than the cpuset here, the mirror of docker-private, where it is tighter. It stops
+# at the machine's core count: a quota above that is a different question, asked on purpose by
+# systemd-quota-above-host, and letting this row drift into it would just duplicate that one.
 QUOTA_CORES=$((BENCH_CPUS + 1))
+[ "$QUOTA_CORES" -gt "$(ncpus)" ] && QUOTA_CORES=$(ncpus)
 
 SET_MEMORY_BYTES=$((512 * 1024 * 1024))
 SET_CPU_CORES=$QUOTA_CORES

@@ -68,10 +68,13 @@ scenario_exec() { container_probe "$1" -m "$SET_MEMORY_BYTES" --cpus "$QUOTA" --
 | `bare` | no limits at all, so every reading should fall back to host values |
 | `systemd-own` | deep chain, limits on the process's own cgroup, cpuset delegated |
 | `systemd-ancestor` | limit on an ancestor while the leaf carries no memory controller files |
+| `systemd-quota-above-host` | a cpu quota larger than the machine has cores, which is a permission, not a resource |
+| `systemd-memory-above-host` | the same on the memory axis: a limit larger than the machine has RAM |
 | `docker-private` | private cgroupns (docker's default), all three axes at once |
 | `docker-memory-only` | memory alone, CPU falls back to host |
 | `docker-cpuset-only` | cpuset alone, memory falls back to host |
 | `docker-host-ns` | `--cgroupns=host`, where the container sees the full chain instead of its own root |
+| `docker-nested-subgroup` | a tighter cgroup made inside the container: two levels, two different limits |
 | `docker-cgroup-parent` | limit on a parent cgroup, set outside the container (needs docker's systemd driver) |
 | `k8s-limits` | a pod with container limits, as kubelet writes them |
 | `k8s-no-limits` | a pod with nothing set, so every reading should fall back to the node's values |
