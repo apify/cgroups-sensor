@@ -21,6 +21,11 @@ on:
       image:
         description: 'Base image the container scenarios run in. Any glibc distro works - uv is mounted in'
         default: 'ghcr.io/astral-sh/uv:python3.13-bookworm'
+      cgroup_v1:
+        description: 'Also run the bench in a guest booted on cgroup v1 (adds a few minutes)'
+        type: choice
+        options: ['off', hybrid, legacy]
+        default: 'off'
 
 run-name: 'bench: ${{ inputs.ref }} / ${{ inputs.scenarios }} / cpus ${{ inputs.cpu_budgets }}'
 
@@ -64,4 +69,47 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: results-${{ matrix.cpus }}cpu
+          path: results/
+
+  bench-v1:
+    # The runner is cgroup v2 only, and a controller cannot be mounted as v1 while the unified hierarchy owns
+    # it, so the v1 side of the library is only reachable inside a guest booted in legacy mode.
+    if: inputs.cgroup_v1 != 'off'
+    name: bench (cgroup v1 guest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Allow KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install qemu
+        run: sudo apt-get install -y --no-install-recommends qemu-system-x86 cloud-image-utils
+
+      - name: Boot the guest and run the bench inside it
+        env:
+          CRAWLEE_REPO: ${{ inputs.repo }}
+          CRAWLEE_REF: ${{ inputs.ref }}
+          V1_MODE: ${{ inputs.cgroup_v1 }}
+        run: ./v1-guest.sh results/
+
+      - name: Report
+        if: always()
+        run: python3 report.py results/ >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check
+        if: always()
+        run: python3 report.py results/ --check >/dev/null
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-cgroup-v1-${{ inputs.cgroup_v1 }}
           path: results/

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 SCENARIO_DESC="a cpu quota larger than the machine has cores"
-REQUIRES="systemd-user"
+REQUIRES="systemd-user unified"
 INNER_STYLE=local
 
 # Nothing rejects a quota above the machine's core count: systemd writes it as asked, and a kubernetes limit

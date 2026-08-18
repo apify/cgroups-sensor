@@ -12,14 +12,21 @@ QUOTA_CORES=$((BENCH_CPUS + 1))
 
 SET_MEMORY_BYTES=$((512 * 1024 * 1024))
 SET_CPU_CORES=$QUOTA_CORES
-SET_CPUSET_CORES=$BENCH_CPUS
+
+# AllowedCPUs= exists only for the unified hierarchy: under cgroup v1 systemd accepts it and silently applies
+# nothing, so the ask is left out there rather than recorded as a limit that was never set.
+CPUSET_PROPS=()
+if have_unified; then
+  SET_CPUSET_CORES=$BENCH_CPUS
+  CPUSET_PROPS=(-p "AllowedCPUs=$(cpuset_list)")
+fi
 
 UNIT="bench-systemd-own-$$"
 
 # sudo strips the environment, so the probe needs PATH and a cache root can write to.
 scenario_exec() {
   sudo systemd-run --scope -q --unit "$UNIT" \
-    -p "MemoryMax=$SET_MEMORY_BYTES" -p "CPUQuota=$((QUOTA_CORES * 100))%" -p "AllowedCPUs=$(cpuset_list)" \
+    -p "MemoryMax=$SET_MEMORY_BYTES" -p "CPUQuota=$((QUOTA_CORES * 100))%" "${CPUSET_PROPS[@]}" \
     env "PATH=$PATH" "HOME=/root" "UV_CACHE_DIR=$BENCH_UV_CACHE/root" sh -c "$1"
 }
 
