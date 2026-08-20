@@ -1,114 +1,128 @@
 # cgroups-sensor
 
-Utility functions to measure resource limits from cgroups in scenarios where psutils is not sufficient.
+Reports the CPU and memory limits that actually apply to the running process, read from cgroups.
 
-Today the repository is a bench for that measurement: it runs a library's cgroup detection inside real
-environment shapes — systemd scopes, containers, kubernetes pods — and prints what the library saw there. It
-runs when a human triggers it and reports to a human; nothing is scheduled and nothing asserts on values.
+## Why
 
-## Running it
+Inside a container the usual answers describe the machine, not the process. `psutil.virtual_memory().total` reports the memory of the node, `os.cpu_count()` reports every core of it. A process that sizes a budget from those numbers keeps growing until the kernel kills it.
 
-On GitHub: **Actions → bench → Run workflow**. Locally, on any cgroup-v2 Linux box with `uv`:
+Reading the cgroup files directly is not enough either. An unrestricted cgroup does not leave its limit empty: cgroup v1 spells it as a sentinel near 2\*\*63, a CPU quota can exceed the cores of the machine, and a CPU set can cover every core. A consumer that takes those at face value believes it has 8 EB of memory.
 
-```bash
-./run.sh                             # every scenario, results into results/
-./run.sh bare docker-private         # only these two
-BENCH_CPUS=2 IMG=fedora:41 ./run.sh  # a different budget, in another distro's userspace
-python3 report.py results/           # the tables
-python3 report.py results/ --check   # same, exit 1 if a probe failed
+This package reads the files, walks the levels, and reports only what restricts the process. `None` means nothing restricts it - the machine is then the honest answer, and `get_machine_cpu_count()` and `get_machine_memory_bytes()` below give it.
+
+Linux only, Python 3.10 or newer, and no dependencies. Off Linux every limit reads as `None`. Some examples below pair it with `psutil`, which this package does not require - it is there to answer what the machine is using, which is not a question about limits.
+
+## Use
+
+Size a memory budget from the limit, and from the machine only when nothing limits you:
+
+```python
+import psutil
+
+import cgroups_sensor
+
+
+def memory_budget() -> tuple[int, int]:
+    """The total and the used memory a budget should be derived from, in bytes."""
+    budget = cgroups_sensor.get_memory_budget()
+    if budget is not None:
+        return budget.limit, budget.working_set
+
+    memory = psutil.virtual_memory()
+    return memory.total, memory.total - memory.available
 ```
 
-| knob | what it sets |
-| --- | --- |
-| `CRAWLEE_REPO`, `CRAWLEE_REF` | what to measure; installed as a source tarball, so the image needs no `git` |
-| `BENCH_CPUS` | cores the CPU-limited scenarios ask for, default 1. They derive cpuset and quota from it, so run it twice: once below the host's core count and once equal to it, where a cpuset stops restricting anything |
-| `IMG` | base image for the container scenarios, default the uv one. Any glibc distro works — uv and the interpreter are mounted in |
-| `BENCH_PYTHON` | interpreter to measure on, default 3.13, so the image cannot change it |
+Size a worker pool from the cores you may use, and from the machine when nothing limits you:
 
-Scenarios whose prerequisites are missing (docker, passwordless sudo, a systemd user manager, kind, enough
-cores) are recorded as `skipped` with the reason; only a crashed probe reddens a run. The `k8s-*` scenarios
-bring up a kind cluster named `cgroups-bench` and leave it running — `kind delete cluster --name cgroups-bench`.
+```python
+import cgroups_sensor
 
-**cgroup v1** cannot be produced on a modern host: a controller belongs to one hierarchy at a time, and on a
-unified system it cannot be mounted as v1 even by root — inside a user namespace, not at all. So the v1 half of
-the library is reachable only from a guest kernel, which is what `./v1-guest.sh` does: it boots Ubuntu 22.04
-(systemd 249, the last releases that still honour the flags), runs the same scenarios inside and copies the
-results back into the same report. `V1_MODE` picks what the guest boots into — `hybrid` puts the v1 controllers
-next to a controller-less cgroup2, so the library has to notice the unified hierarchy is empty and fall back
-per controller, while `legacy` is plain v1. In the workflow both are the `cgroup_v1` input.
-
-It needs `qemu-system-x86 cloud-image-utils` and a usable `/dev/kvm` (`sudo usermod -aG kvm $USER` locally, a
-udev rule on a runner); `V1_ACCEL=tcg` emulates instead, which is slow but needs no privileges. The report's
-`v2` column says what the guest actually came up as, and a v1 host with no limit reports the sentinel that
-shows up in the table as `8.00 EB`.
-
-## Files
-
-| file | what it does |
-| --- | --- |
-| [run.sh](run.sh) | Runs each scenario and always writes a result, so a crash is a recorded row rather than a missing one. |
-| [scenario-helpers.sh](scenario-helpers.sh) | The vocabulary scenarios are written in: prerequisite probes, cpuset derivation, the container and pod launchers. |
-| [scenarios/](scenarios/) | One file per environment shape; every file here is a scenario. |
-| [probe.py](probe.py) | Runs inside the prepared environment and prints one JSON object with what Crawlee sees there. |
-| [wrap.py](wrap.py) | Folds the probe's output and the scenario's configuration into one result file. |
-| [report.py](report.py) | Turns a results directory into the tables. `--check` is the only gate. |
-| [v1-guest.sh](v1-guest.sh) | Boots a guest on cgroup v1 and runs the bench inside it, bringing the results back. |
-| [.github/workflows/bench.yaml](.github/workflows/bench.yaml) | Manual trigger only, one job per CPU budget. |
-
-## Scenarios
-
-A scenario declares what it needs, what it configures, and how to run the probe in the environment it prepares.
-The commands use the declared values rather than repeating them, so the report's `set` column is literally what
-was applied.
-
-```bash
-SCENARIO_DESC="private cgroupns (docker's default), all three axes at once"
-REQUIRES="engine min${BENCH_CPUS}cpu"   # unmet -> skipped, with this reason in the table
-
-QUOTA=$(awk "BEGIN{print $BENCH_CPUS - 0.5}")
-
-SET_MEMORY_BYTES=$((512 * 1024 * 1024))  # an axis left undeclared means the scenario restricts nothing
-SET_CPU_CORES=$QUOTA                     # there, so the sensor reporting nothing is the right answer
-SET_CPUSET_CORES=$BENCH_CPUS
-
-scenario_exec() { container_probe "$1" -m "$SET_MEMORY_BYTES" --cpus "$QUOTA" --cpuset-cpus "$(cpuset_list)"; }
+cores = cgroups_sensor.get_cpu_limit() or cgroups_sensor.get_machine_cpu_count() or 1
+workers = max(1, round(cores))
 ```
 
-`scenario_exec` must keep its stdout pure probe JSON, so setup noise goes to stderr; an optional
-`scenario_cleanup` runs in a trap. A new scenario is one such file — it is picked up and reported automatically.
+`get_machine_cpu_count()` rather than `os.cpu_count()`: the latter honours the `PYTHON_CPU_COUNT` override, and under musl it reports the affinity of the process instead of the machine. `psutil.cpu_count()` has the same two problems. This one asks the kernel.
 
-| scenario | shape it exercises |
+Measure the CPU load against what you may use, rather than against the machine. A cgroup reports consumed CPU time as a counter, so a rate needs two readings. `CpuLoad` keeps the previous one, which makes the window as long as the interval between calls and costs no waiting:
+
+```python
+import time
+
+import psutil
+
+import cgroups_sensor
+
+load = cgroups_sensor.CpuLoad()
+
+while True:
+    used_ratio = load.sample()
+    if used_ratio is None:
+        used_ratio = psutil.cpu_percent() / 100
+    ...
+    time.sleep(5)
+```
+
+The loop has to pace itself, as the `sleep` above does: every call here returns at once where there is nothing to measure, and `sample()` never waits at all. For a single measurement there is `get_cpu_used_ratio(interval)`, which waits out the window itself, and `get_cpu_used_ratio_async(interval)` for asyncio. Keep the interval generous - the kernel updates the counter in coarse steps, so a tenth of a second can report a busy process as idle, and anything below 0.01 seconds is refused outright.
+
+Log what applies when a service starts, so a surprising number can be explained later:
+
+```python
+import logging
+
+import cgroups_sensor
+
+logger = logging.getLogger(__name__)
+logger.info('resource limits: %s', cgroups_sensor.snapshot())
+
+for notice in cgroups_sensor.describe().notices:
+    logger.info('%s: %s', notice.code, notice.message)
+```
+
+## What it reports
+
+Which call for which job: `get_memory_budget().available` to size a memory budget, `get_cpu_limit()` to size a pool, `CpuLoad().sample()` or `get_cpu_used_ratio()` for a load, `describe()` when a number looks wrong. `get_cpu_usage()` is a raw counter - do not divide it by `get_cpu_limit()` yourself, because the limit can come from a level above this process and the two would describe different scopes; that is what `CpuLoad` is for.
+
+| Call | Answers |
 | --- | --- |
-| `bare` | no limits at all, so every reading should fall back to host values |
-| `systemd-own` | deep chain, limits on the process's own cgroup, cpuset delegated |
-| `systemd-ancestor` | limit on an ancestor while the leaf carries no memory controller files |
-| `systemd-quota-above-host` | a cpu quota larger than the machine has cores, which is a permission, not a resource |
-| `systemd-memory-above-host` | the same on the memory axis: a limit larger than the machine has RAM |
-| `docker-private` | private cgroupns (docker's default), all three axes at once |
-| `docker-memory-only` | memory alone, CPU falls back to host |
-| `docker-cpuset-only` | cpuset alone, memory falls back to host |
-| `docker-host-ns` | `--cgroupns=host`, where the container sees the full chain instead of its own root |
-| `docker-nested-subgroup` | a tighter cgroup made inside the container: two levels, two different limits |
-| `docker-cgroup-parent` | limit on a parent cgroup, set outside the container (needs docker's systemd driver) |
-| `k8s-limits` | a pod with container limits, as kubelet writes them |
-| `k8s-no-limits` | a pod with nothing set, so every reading should fall back to the node's values |
+| `get_memory_budget()` | the memory limit and the memory charged against it, or `None` |
+| `get_cpu_limit()` | how many cores may be used, or `None` |
+| `get_cpu_usage()` | CPU seconds consumed so far, a counter that only grows |
+| `CpuLoad().sample()` | the share of the allowed cores used since the previous call |
+| `get_cpu_used_ratio(interval)` | the same, measured across one window it waits out |
+| `get_cpu_used_ratio_async(interval)` | the same, for asyncio |
+| `snapshot()` | all of the above except the ratio, taken at once |
+| `describe()` | the readings again, where they came from, the raw values, and why any are missing |
+| `get_machine_cpu_count()` | the cores the kernel lists as online, whatever this process may use |
+| `get_machine_memory_bytes()` | the total memory of the machine |
+| `clear_cache()` | forget the discovered files after the process was moved to another cgroup |
 
-## Results
+`MemoryBudget` carries `limit` and `working_set`, and reports `available` and `used_ratio` derived from them. `available` is the memory this process can still allocate before something kills it, and it is the number to size a budget from. Where several levels hold a limit, that distance is the smallest one along the chain, moved onto the tightest limit so the pair stays comparable. An out-of-memory kill follows from that distance rather than from a ratio, which is why it is the number kept exact.
 
-One `results/<scenario>.json` per scenario with the scenario's `configured` values, its `status` (`ok`,
-`probe_failed`, `skipped`) and everything the probe printed:
+`limit` and `working_set` describe the cgroup the limit was found at, and that is not always the cgroup of this process: a limit on a slice or a Kubernetes pod restricts everything under it, and the memory of everything under it is charged against it. Where that happens `used_ratio` is the share of that whole level, not of this process. `describe().memory_limit_level` names the level. `available` is unaffected: the room left there is the room left here.
 
-| section | contents |
+The working set excludes reclaimable file cache, the same way `docker stats` and `kubectl top` do. Those tools read one cgroup and never walk up, so they agree with this only while a single level is visible.
+
+The CPU works the same way. A quota often sits above the process - a systemd scope carries none of its own, and the slice above it does - and the kernel then throttles that whole level, siblings included. The load is therefore measured where the quota binds, not in the group of this process, which would report an idle service inside a saturated slice.
+
+## What it does not do
+
+It reports two facts about the machine and no more: the online cores and the total memory, which are the numbers the filters compare against and the ones a consumer needs when a reading is `None`. Anything else about the machine - free memory, load, per-process figures - is what `psutil` is for. It does not read the affinity of the process, because `taskset` narrows one process without narrowing the cgroup its CPU time is accounted to. It never logs: everything that was dropped, and why, is available from `describe()`.
+
+## Diagnostics
+
+`describe()` explains a reading that looks wrong. It carries the readings themselves, so one dump answers what was reported as well as why, and around them a `Source` per metric - the mechanism it was read through and the levels searched - the raw values before filtering, the machine it compared against, the levels the memory and the CPU limit actually came from, and a notice for every reading that is not there. A reading of `None` with no notice about it means the mechanism was there and nothing limited this process in a way that kills it - only hard limits are read, and `memory.high` throttles reclaim instead. The levels searched are not the levels a reading came from: a level carries no files until a limit is written there, and it is kept in the chain regardless.
+
+`Source.interface` is an `Interface` member, and a notice carries a `NoticeCode`. Branch on those rather than on the strings they print as:
+
+| `NoticeCode` | Meaning |
 | --- | --- |
-| `sensor` | what `crawlee._utils.cgroup` reports: memory limit and working set, cpu quota, cpuset size, cpu time, and the levels it walked |
-| `derived` | what `crawlee._utils.system` makes of that in `get_memory_info()` and `get_cpu_info()` |
-| `evidence` | verbatim contents of the cgroup control files at every level, never interpreted |
-| `host` | kernel, cores and RAM of the machine |
-| `errors` | readings that raised; the value becomes `null` and the probe carries on |
-
-`report.py` renders two tables. In the first, each limit has a `set` column next to a `read` one: a value under
-`set` with a dash under `read` is a limit the sensor missed, and dashes under both mean the scenario restricts
-nothing there and the sensor agrees. `mem in use` is the memory charged against the limit excluding reclaimable
-page cache — what `docker stats` shows. The second table is the same run seen through `get_memory_info()` and
-`get_cpu_info()`, where a limit either reaches the caller or falls back to host values. When a reading looks
-wrong, `evidence` says who is at fault: the limit is in the control files, or it never got there.
+| `MEMORY_LIMIT_COVERS_MACHINE` | the limit is at least the memory of the machine |
+| `MEMORY_USAGE_UNAVAILABLE` | a limit was found, but no usage to pair it with |
+| `MACHINE_MEMORY_UNKNOWN` | the memory of the machine cannot be read, so a sentinel cannot be told apart |
+| `CPU_QUOTA_COVERS_MACHINE` | the quota is at least the cores of the machine |
+| `CPU_SET_COVERS_MACHINE` | the set covers every core of the machine |
+| `CPU_USAGE_SCOPE_MISMATCH` | the level the CPU limit applies to counts no CPU time, so no rate can be measured there |
+| `MEMORY_METRICS_UNAVAILABLE` | nothing here carries a memory limit at all, which is what a machine without cgroups looks like |
+| `CPU_METRICS_UNAVAILABLE` | nothing here carries a CPU limit at all, for the same reasons |
+| `MEMORY_LIMIT_UNREADABLE` | a level holds a memory limit that says nothing usable, so what it enforces is unknown |
+| `CPU_LIMIT_UNREADABLE` | the same for a CPU limit |
