@@ -13,8 +13,9 @@ GUEST_USER=bench
 UBUNTU=https://cloud-images.ubuntu.com/releases/22.04/release
 FEDORA=https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images
 
-# A profile is one machine to run the suite on. The suite skips whatever a machine cannot do, so each profile
-# covers what it can: the Ubuntu ones exist for cgroup v1, the Fedora one for a second distribution.
+# A profile is one machine to run the suite on: the Ubuntu ones exist for cgroup v1, the Fedora one for a
+# second distribution. Nothing in the suite skips itself, so each profile says by name which tests its machine
+# cannot carry, and everything else has to pass.
 case $PROFILE in
   ubuntu-v1-hybrid | ubuntu-v1-legacy)
     # cgroup v1 cannot be produced on a modern host, and systemd honours the flags below only up to v255.
@@ -28,9 +29,10 @@ case $PROFILE in
     INITRD_URL=${GUEST_INITRD_URL:-$UBUNTU/unpacked/ubuntu-22.04-server-cloudimg-amd64-initrd-generic}
     PACKAGES=docker.io
     PREPARE=''
-    # The guest exists for cgroup v1. One that came up on v2 would run a smaller suite and still report
-    # success, so the suite is told what it has to find.
-    REQUIRE='docker,sudo'
+    # What cgroup v1 costs, and it is the point of this profile: user scopes get no resource controllers, and
+    # docker drives cgroups through cgroupfs, so a slice name means nothing to it. kind is not installed.
+    # Everything else - docker, sudo, systemd, two cores - this guest has, and a test needing it has to pass.
+    EXCLUDE='not unified and not systemd_slices and not kubernetes'
     INTERFACE=cgroup-v1
     CGROUP_ARGS='systemd.unified_cgroup_hierarchy=0'
     [ "$PROFILE" = ubuntu-v1-legacy ] && CGROUP_ARGS="$CGROUP_ARGS systemd.legacy_systemd_cgroup_controller=1"
@@ -44,7 +46,8 @@ case $PROFILE in
     KERNEL_URL=''
     INITRD_URL=''
     PACKAGES=moby-engine
-    REQUIRE='docker,sudo,systemd'
+    # A full cgroup v2 machine, so only the cluster tests are out: kind is not installed here.
+    EXCLUDE='not kubernetes'
     INTERFACE=cgroup-v2
     # Only the test plumbing needs this: the suite bind-mounts the repository into containers, which SELinux
     # denies without relabelling. The sensor itself reads `/proc` and `/sys` and is not affected.
@@ -206,10 +209,9 @@ run_suite() {
   local args=''
   [ "$#" -eq 0 ] || args=" ${*@Q}"
 
-  # The floors travel with the command. Without them the suite would skip whatever the guest cannot do and
-  # report success, which is exactly what these profiles exist to catch.
-  local floors="E2E_REQUIRE='$REQUIRE' E2E_INTERFACE='$INTERFACE'"
-  local suite="cd sensor && uv run poe install-dev && $floors uv run poe e2e-tests$args"
+  # The profile's exclusions travel with the command, and everything they leave has to pass inside the guest.
+  local suite="cd sensor && uv run poe install-dev"
+  suite="$suite && E2E_INTERFACE='$INTERFACE' uv run pytest tests/e2e -m ${EXCLUDE@Q}$args"
   local status=0
 
   echo 'guest: running the e2e suite inside'

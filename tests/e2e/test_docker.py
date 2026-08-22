@@ -37,7 +37,6 @@ def test_memory_only() -> None:
 
     check_invariants(reading)
     assert reading.memory_limit == MEMORY_LIMIT
-    # The floor `check_invariants` applies is the memory the probe charged to this cgroup on purpose.
     assert reading.working_set is not None
     assert reading.working_set < reading.memory_limit
     assert reading.cpu_limit is None
@@ -52,7 +51,6 @@ def test_cpu_quota() -> None:
     assert reading.memory_limit is None
 
 
-@pytest.mark.usefixtures('_two_cores')
 def test_cpu_set_only() -> None:
     """Reads a set of allowed cores, which restricts the CPU without any quota."""
     reading = probe_in_container('--cpuset-cpus', '0')
@@ -63,7 +61,6 @@ def test_cpu_set_only() -> None:
     assert reading.raw_cpu_quota is None
 
 
-@pytest.mark.usefixtures('_two_cores')
 def test_every_axis_at_once() -> None:
     """Takes the tighter of the two CPU axes. Here the quota is tighter than the set."""
     reading = probe_in_container(
@@ -88,9 +85,8 @@ def test_host_cgroup_namespace() -> None:
     check_invariants(reading)
     assert reading.memory_limit == MEMORY_LIMIT
 
-    # Under cgroup v2 the whole hierarchy is mounted, so the container sees its ancestry and the walk has
-    # several levels. Under cgroup v1 each controller is mounted at the container's own cgroup, which hides
-    # the ancestry whatever the namespace.
+    # Under cgroup v2 the whole hierarchy is mounted, so the container sees its ancestry. Under cgroup v1
+    # each controller is mounted at the container's own cgroup, which hides it whatever the namespace.
     if reading.sources['memory']['interface'] == 'cgroup-v2':
         assert len(reading.sources['memory']['levels']) > 1
 
@@ -99,11 +95,10 @@ def test_tighter_limit_inside_the_container() -> None:
     """Takes the tightest limit when two levels carry different ones.
 
     The container gets one limit and the probe puts itself under a tighter one. That is the shape kubelet
-    produces, and the only one here where two levels disagree.
+    produces.
     """
     # The kernel forbids a cgroup that both holds processes and delegates controllers, so the shell vacates
-    # the root first, then enables the controller, then moves into the tighter cgroup. `0` is how a process
-    # names itself to cgroupfs; an explicit PID takes the path meant for moving somebody else.
+    # the root first, enables the controller, then moves in. `0` is how a process names itself to cgroupfs.
     setup = f"""
     set -e
     if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
@@ -135,11 +130,10 @@ def test_tighter_limit_inside_the_container() -> None:
 def test_distributions(image: str) -> None:
     """Reads the same limits whatever distribution the process runs on.
 
-    The sensor only reads `/proc` and `/sys`, so the C library and the package layout should not matter. This
-    pins that: musl and glibc, and a distribution outside the Debian family.
+    The sensor only reads `/proc` and `/sys`, so the C library should not matter. It once did: under musl
+    `sysconf` reported the affinity instead of the machine.
     """
-    if not pull_image(image):
-        pytest.skip(f'{image} cannot be pulled')
+    pull_image(image)
 
     reading = probe_in_container(
         '--memory',
@@ -171,7 +165,7 @@ def test_python_versions(python_version: str) -> None:
     assert reading.cpu_limit == QUOTA_CORES
 
 
-@pytest.mark.usefixtures('_sudo', '_systemd_cgroup_driver')
+@pytest.mark.systemd_slices
 def test_limit_on_a_parent_cgroup(parent_slice: str) -> None:
     """Reads a limit set outside the container, on the slice the container was put into.
 

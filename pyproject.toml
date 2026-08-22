@@ -100,11 +100,13 @@ inline-quotes = "single"
 known-first-party = ["cgroups_sensor"]
 
 [tool.pytest.ini_options]
-# `--strict-markers` because the gates of the e2e suite are `usefixtures` marks: a mistyped one would run the
-# test without its gate. `--strict-config` and `filterwarnings` fail on a typo here and on a deprecation in
-# what the package is read through, which for a stdlib-only package is a real signal.
 addopts = "-r a --verbose --strict-markers --strict-config"
 filterwarnings = ["error"]
+markers = [
+    "unified: needs the resource controllers on the cgroup v2 unified hierarchy; cgroup v1 lanes exclude it",
+    "systemd_slices: needs docker to place containers under systemd slices; cgroup v1 lanes exclude it",
+    "kubernetes: needs kind and kubectl; only the kubernetes lane runs these",
+]
 # The e2e readings carry a dozen fields, and a truncated one hides the number that explains the failure.
 verbosity_assertions = 2
 

@@ -13,16 +13,16 @@ MEASUREMENT_SECONDS = 1.0
 ALLOCATION_BYTES = 32 * 1024 * 1024
 """How much memory the probe charges to its own cgroup before reading, so that the working set has a floor.
 
-Anonymous memory, touched: nothing about it is reclaimable file cache, so a working set below this would mean
-the reading is not the memory of this process.
+Anonymous and touched, so none of it is reclaimable file cache. A working set below this is not the memory of
+this process.
 """
 
 
 def burn(seconds: float) -> None:
     """Keep one core busy for a while.
 
-    The rate is the one reading that says nothing when it is measured in the wrong cgroup: an idle process
-    reads as zero everywhere, correct or not. So the probe makes itself busy while it measures.
+    An idle process reads a rate of zero in every cgroup, right or wrong. So the probe makes itself busy
+    while it measures.
     """
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:

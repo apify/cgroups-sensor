@@ -30,7 +30,6 @@ jobs:
     env:
       # The suite itself, and with it the probe on this machine, runs on the version of the matrix.
       UV_PYTHON: ${{ matrix.python-version }}
-      E2E_REQUIRE: sudo,systemd
       E2E_INTERFACE: cgroup-v2
     steps:
       - name: Checkout repository
@@ -42,8 +41,8 @@ jobs:
       - name: Install dependencies
         run: uv run poe install-dev
 
-      # pytest directly, not `poe e2e-tests`: that task names the whole suite, and a path passed to it would
-      # be collected on top of the directory rather than instead of it.
+      # This runner is a plain cgroup v2 machine with systemd and passwordless sudo, so every machine test
+      # holds here and none is excluded.
       - name: Run the machine tests
         run: uv run pytest tests/e2e/test_machine.py
 
@@ -52,9 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # What this runner is here to prove. Without it a runner that lost docker would report a green job
-      # while every container test quietly skipped.
-      E2E_REQUIRE: docker,sudo,systemd
       E2E_INTERFACE: cgroup-v2
     steps:
       - name: Checkout repository
@@ -67,7 +63,6 @@ jobs:
         run: uv run poe install-dev
 
       - name: Run the container tests
-        # These parametrize the interpreter themselves, inside the containers, so they run once.
         run: uv run pytest tests/e2e/test_docker.py
 
   kubernetes:
@@ -90,8 +85,6 @@ jobs:
         run: uv run poe install-dev
 
       - name: Run the kubernetes tests
-        env:
-          E2E_REQUIRE: kubernetes
         run: uv run pytest tests/e2e/test_kubernetes.py
 
   guest:

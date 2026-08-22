@@ -37,8 +37,7 @@ def test_unrestricted() -> None:
 def test_python_versions(python_version: str) -> None:
     """Reads the same machine facts on every supported interpreter.
 
-    The version is a real axis here. `os.cpu_count()` started honoring `PYTHON_CPU_COUNT` in 3.13, and the
-    filters compare against these numbers.
+    The version is a real axis: `os.cpu_count()` started honoring `PYTHON_CPU_COUNT` in 3.13.
     """
     reading = probe_here(python_version=python_version)
 
@@ -47,21 +46,20 @@ def test_python_versions(python_version: str) -> None:
     assert reading.machine_memory_bytes == machine_memory_bytes()
 
 
-@pytest.mark.usefixtures('_systemd_user', '_unified')
+@pytest.mark.unified
 def test_memory_limit(systemd_scope: Callable[..., list[str]]) -> None:
     """Reads a memory limit set on the scope this process runs in."""
     reading = probe_here(systemd_scope(f'MemoryMax={MEMORY_LIMIT}'))
 
     check_invariants(reading)
     assert reading.memory_limit == MEMORY_LIMIT
-    # The floor `check_invariants` applies is the memory the probe charged to this cgroup on purpose.
     assert reading.working_set is not None
     assert reading.working_set < reading.memory_limit
     # The machine can carry unrelated notices, e.g. about a CPU set covering every core.
     assert not notices_about(reading, 'memory')
 
 
-@pytest.mark.usefixtures('_systemd_user', '_unified')
+@pytest.mark.unified
 def test_cpu_quota(systemd_scope: Callable[..., list[str]]) -> None:
     """Reads a CPU quota set on the scope this process runs in."""
     reading = probe_here(systemd_scope(f'CPUQuota={int(QUOTA_CORES * 100)}%'))
@@ -71,7 +69,7 @@ def test_cpu_quota(systemd_scope: Callable[..., list[str]]) -> None:
     assert reading.raw_cpu_quota == QUOTA_CORES
 
 
-@pytest.mark.usefixtures('_systemd_user', '_unified')
+@pytest.mark.unified
 def test_memory_limit_above_the_machine(systemd_scope: Callable[..., list[str]]) -> None:
     """Drops a memory limit larger than the machine, and says so.
 
@@ -86,7 +84,7 @@ def test_memory_limit_above_the_machine(systemd_scope: Callable[..., list[str]])
     assert 'memory-limit-covers-machine' in reading.notices
 
 
-@pytest.mark.usefixtures('_systemd_user', '_unified')
+@pytest.mark.unified
 def test_cpu_quota_above_the_machine(systemd_scope: Callable[..., list[str]]) -> None:
     """Drops a CPU quota larger than the machine, and says so.
 
@@ -101,12 +99,11 @@ def test_cpu_quota_above_the_machine(systemd_scope: Callable[..., list[str]]) ->
     assert 'cpu-quota-covers-machine' in reading.notices
 
 
-@pytest.mark.usefixtures('_sudo', '_systemd_system', '_two_cores')
 def test_every_axis_at_once(systemd_scope: Callable[..., list[str]]) -> None:
     """Reads all three limits at once. The tighter of the two CPU axes wins.
 
-    A system scope, not a user one: under cgroup v1 a user scope gets no cgroup in the resource controllers,
-    and `AllowedCPUs=` needs a delegated cpuset that only the unified hierarchy has.
+    A system scope, not a user one: under cgroup v1 a user scope gets no resource cgroup. `AllowedCPUs=`
+    needs a delegated cpuset, which only the unified hierarchy has.
     """
     properties = [f'MemoryMax={MEMORY_LIMIT}', f'CPUQuota={int(QUOTA_CORES * 100)}%']
     if is_unified():
@@ -122,44 +119,42 @@ def test_every_axis_at_once(systemd_scope: Callable[..., list[str]]) -> None:
         assert reading.raw_cpu_set_size == 1
 
 
-@pytest.mark.usefixtures('_systemd_user', '_unified')
 def test_limit_on_an_ancestor(systemd_scope: Callable[..., list[str]]) -> None:
-    """Reads a limit from an ancestor when the own cgroup carries no memory files at all.
+    """Reads a limit from an ancestor when the own cgroup carries no limit of its own.
 
-    `Delegate=yes` lets the probe move into a child cgroup. That child inherits no memory controller, so the
-    sensor has to walk up past a level with nothing to read.
+    The probe makes a child cgroup and moves into it, so the sensor has to walk up to find the limit. A system
+    scope, because under cgroup v1 a user scope gets no resource cgroup at all.
     """
-    wrapper = systemd_scope(f'MemoryMax={MEMORY_LIMIT}', 'Delegate=yes')
-    move_into_leaf = [
-        'bash',
-        '-c',
-        (
-            'set -e; '
-            'own=$(grep "^0::" /proc/self/cgroup | cut -d: -f3); '
-            'leaf="/sys/fs/cgroup$own/leaf"; '
-            # What a delegated scope is for. Where systemd delegates it differently - the Fedora guest, with a
-            # much newer one - the shape cannot be built, and this says so instead of probing the scope itself
-            # and blaming the reading. The errno of whichever step failed travels out on stderr.
-            # `0` is the kernel's word for "the writing process". An explicit PID takes the path meant for
-            # moving somebody else, which the kernel of Fedora 43 refuses with EINVAL where the older one of
-            # Ubuntu 22.04 allowed it.
-            f'{{ mkdir -p "$leaf" && echo 0 > "$leaf/cgroup.procs"; }} || {{ '
-            # Where it still fails, say what the kernel refused and who owns what a delegated scope hands
-            # over - the two things that tell a missing delegation apart from a refused move.
-            'echo "own=$own type=$(cat "/sys/fs/cgroup$own/cgroup.type" 2>&1)"'
-            ' "subtree=[$(cat "/sys/fs/cgroup$own/cgroup.subtree_control" 2>&1)]"'
-            ' "as=$(id -u):$(id -g)" "owner=$(stat -c %U:%G:%a "$leaf/cgroup.procs" 2>&1)" >&2; '
-            f'exit {CANNOT_SET_UP}; }}; '
-            'exec "$@"'
-        ),
-        '--',
-    ]
-    reading = probe_here([*wrapper, *move_into_leaf])
+    properties = [f'MemoryMax={MEMORY_LIMIT}']
+    if is_unified():
+        # Nothing can be created below a scope that is not delegated. cgroup v1 has no such rule.
+        properties.append('Delegate=yes')
+
+    # Under cgroup v1 the controller is mounted at its own point, so the chain hangs off another path. `0` is
+    # how a process names itself to cgroupfs; an explicit PID takes the path for moving somebody else, which
+    # the kernel of Fedora 43 refuses with EINVAL.
+    move_into_leaf = f"""
+    set -e
+    if [ -e /sys/fs/cgroup/cgroup.controllers ]; then
+        leaf="/sys/fs/cgroup$(grep "^0::" /proc/self/cgroup | cut -d: -f3)/leaf"
+    else
+        leaf="/sys/fs/cgroup/memory$(grep ":memory:" /proc/self/cgroup | cut -d: -f3)/leaf"
+    fi
+
+    if ! {{ mkdir -p "$leaf" && echo 0 > "$leaf/cgroup.procs"; }}; then
+        # Who we are and who owns the file. That tells a missing delegation from a refused move.
+        echo "leaf=$leaf as=$(id -u):$(id -g) owner=$(stat -c %U:%G:%a "$leaf/cgroup.procs" 2>&1)" >&2
+        exit {CANNOT_SET_UP}
+    fi
+
+    exec "$@"
+    """
+    reading = probe_here([*systemd_scope(*properties, system=True), 'bash', '-c', move_into_leaf, '--'])
 
     check_invariants(reading)
     assert reading.memory_limit == MEMORY_LIMIT
 
-    # The walk starts at the leaf, which carries no memory files at all, and finds the limit above it.
+    # The walk starts at the leaf and finds the limit above it.
     levels = reading.sources['memory']['levels']
     assert levels[0].endswith('/leaf')
     assert len(levels) > 1
@@ -170,15 +165,12 @@ def test_limit_on_an_ancestor(systemd_scope: Callable[..., list[str]]) -> None:
 def test_expected_interface() -> None:
     """Check that this run reached the cgroup interface it was started for.
 
-    A guest booted for cgroup v1 that comes up on v2 runs a smaller suite and reports success, which is the
-    one way this lane can lie. `E2E_INTERFACE=cgroup-v1` makes it say so instead.
+    A guest booted for cgroup v1 that comes up on v2 would run a smaller set and still report success.
+    `E2E_INTERFACE` names what to expect. Without it, this machine is asked what it is.
 
-    The limits are what has to come from that interface. The CPU counter is allowed to differ, for the reason
-    `Reading.limit_interfaces` gives.
+    Only the limits have to come from that interface, for the reason `Reading.limit_interfaces` gives.
     """
-    expected = os.environ.get('E2E_INTERFACE')
-    if not expected:
-        pytest.skip('E2E_INTERFACE names no interface to check')
+    expected = os.environ.get('E2E_INTERFACE') or ('cgroup-v2' if is_unified() else 'cgroup-v1')
 
     reading = probe_here()
 

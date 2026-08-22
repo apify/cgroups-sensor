@@ -14,15 +14,16 @@ from .harness import (
     SRC_DIR,
     TIMEOUT_SECONDS,
     check_invariants,
-    have,
     parse,
-    unavailable,
+    pull_image,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from .harness import Reading
+
+pytestmark = [pytest.mark.kubernetes, pytest.mark.usefixtures('_cluster')]
 
 CLUSTER = 'cgroups-sensor-e2e'
 POD = 'sensor-probe'
@@ -49,9 +50,6 @@ def kubectl(*args: str, check: bool = True) -> str:
 @pytest.fixture(scope='session')
 def _cluster() -> Iterator[None]:
     """Bring up a kind cluster carrying the probe image, and take it down afterwards."""
-    if not have('kind') or not have('kubectl') or not have('docker'):
-        unavailable('kubernetes', 'kind, kubectl and docker are needed to run a cluster')
-
     existing = subprocess.run(
         ['kind', 'get', 'clusters'],
         capture_output=True,
@@ -70,14 +68,9 @@ def _cluster() -> Iterator[None]:
             check=False,
         )
         if created.returncode != 0:
-            unavailable('kubernetes', f'the cluster could not be created: {created.stderr.strip()[-300:]}')
+            pytest.fail(f'the cluster could not be created: {created.stderr.strip()[-300:]}')
 
-    subprocess.run(
-        ['docker', 'pull', '--quiet', IMAGE],
-        capture_output=True,
-        timeout=TIMEOUT_SECONDS,
-        check=False,
-    )
+    pull_image(IMAGE)
     subprocess.run(
         ['kind', 'load', 'docker-image', IMAGE, '--name', CLUSTER],
         capture_output=True,
@@ -85,8 +78,8 @@ def _cluster() -> Iterator[None]:
         check=False,
     )
 
-    # The package and the probe travel as config maps, so nothing has to be built into an image. The files go
-    # in one by one, or a stray `__pycache__` would travel with them.
+    # The package and the probe travel as config maps, so no image has to be built. The files go in one by
+    # one, or a stray `__pycache__` travels with them.
     sources = sorted((SRC_DIR / 'cgroups_sensor').glob('*.py'))
     kubectl('delete', 'configmap', SRC_MAP, PROBE_MAP, '--ignore-not-found')
     kubectl('create', 'configmap', SRC_MAP, *[f'--from-file={path}' for path in sources])
@@ -151,21 +144,13 @@ def probe_in_pod(resources: dict[str, Any]) -> Reading:
     if apply.returncode != 0:
         pytest.fail(f'the pod could not be created:\n{apply.stderr}')
 
+    # Only the phase is watched. `Unschedulable` is no verdict: the scheduler retries, and a pod that waits
+    # for the node or for the previous pod still runs. What it never got past is in the `describe` below.
     phase = ''
     for _ in range(POD_WAIT_SECONDS):
         phase = kubectl('get', f'pod/{POD}', '-o', 'jsonpath={.status.phase}', check=False).strip()
         if phase in {'Succeeded', 'Failed'}:
             break
-
-        reason = kubectl(
-            'get',
-            f'pod/{POD}',
-            '-o',
-            'jsonpath={.status.conditions[?(@.type=="PodScheduled")].reason}',
-            check=False,
-        ).strip()
-        if reason == 'Unschedulable':
-            pytest.skip('the pod does not fit this node')
 
         time.sleep(1)
 
@@ -179,7 +164,6 @@ def probe_in_pod(resources: dict[str, Any]) -> Reading:
     return reading
 
 
-@pytest.mark.usefixtures('_cluster')
 def test_pod_with_limits() -> None:
     """Reads container limits from inside the pod's own cgroup namespace.
 
@@ -187,8 +171,8 @@ def test_pod_with_limits() -> None:
     """
     reading = probe_in_pod(
         {
-            # Small requests on purpose: kubernetes copies limits into requests when none are given, and a pod
-            # requesting the whole node can never be scheduled.
+            # Small on purpose: kubernetes copies limits into requests when none are given, and a pod
+            # requesting the whole node never schedules.
             'requests': {'cpu': '50m', 'memory': '64Mi'},
             'limits': {'cpu': '500m', 'memory': str(MEMORY_LIMIT)},
         }
@@ -199,7 +183,6 @@ def test_pod_with_limits() -> None:
     assert reading.cpu_limit == 0.5
 
 
-@pytest.mark.usefixtures('_cluster')
 def test_pod_without_limits() -> None:
     """Reports no restriction for a pod that sets none, inside the same kubepods hierarchy."""
     reading = probe_in_pod({})

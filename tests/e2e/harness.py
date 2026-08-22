@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -48,30 +47,11 @@ QUOTA_CORES = 0.5
 TIMEOUT_SECONDS = 300
 
 CANNOT_SET_UP = 77
-"""What a wrapper exits with when the environment refuses to produce the shape a test needs.
+"""What a wrapper exits with when it could not produce the shape a test needs.
 
-GNU's convention for "skipped". A test that arranges a cgroup layout before probing has to say which of the
-two happened: the layout could not be built here, or it was built and the reading is wrong. Without this the
-setup fails silently and the assertion afterwards blames the sensor for it.
+Both fail the run, but differently: the layout could not be built, or it was built and the reading is wrong.
+Without this the setup breaks silently and the assertion afterwards blames the sensor for it.
 """
-
-CAPABILITIES = frozenset({'docker', 'sudo', 'systemd', 'kubernetes'})
-"""What a lane can be told to prove. `E2E_REQUIRE` is checked against this, so a typo cannot quietly disarm it."""
-
-REQUIRED_CAPABILITIES = frozenset(name for name in os.environ.get('E2E_REQUIRE', '').split(',') if name)
-"""What this run must actually exercise, e.g. `E2E_REQUIRE=docker,systemd`.
-
-A test skips where its environment is missing, which is what makes one suite run everywhere. In CI that turns
-a broken runner into a green job, so each lane names what it is there for and a missing capability fails.
-"""
-
-
-def unavailable(capability: str, reason: str) -> None:
-    """Skip because the environment cannot do this, or fail when this run was supposed to prove it."""
-    if capability in REQUIRED_CAPABILITIES:
-        pytest.fail(f'{reason}, and E2E_REQUIRE names {capability}')
-
-    pytest.skip(reason)
 
 
 @dataclass(frozen=True)
@@ -106,9 +86,8 @@ class Reading:
     def limit_interfaces(self) -> set[str]:
         """The mechanisms the limits came from.
 
-        The consumed CPU time is left out on purpose. It comes from the hierarchy carrying the limits
-        wherever that hierarchy counts anything, but where nothing does, the base `cpu.stat` of a
-        controller-less cgroup2 is all there is - and that is not a reason to fail a lane.
+        The consumed CPU time is left out. Where no hierarchy counts anything, the base `cpu.stat` of a
+        controller-less cgroup2 is all there is.
         """
         return {
             source['interface'] for name, source in self.sources.items() if name != 'cpu_usage' and source is not None
@@ -165,7 +144,7 @@ def run(command: list[str], *, env: dict[str, str] | None = None) -> Reading:
     )
 
     if result.returncode == CANNOT_SET_UP:
-        pytest.skip(f'the environment cannot set this up: {result.stderr.strip()[-300:]}')
+        pytest.fail(f'the layout this test needs could not be built: {result.stderr.strip()[-300:]}')
 
     if result.returncode != 0:
         pytest.fail(
@@ -204,7 +183,7 @@ def probe_command(python_version: str = PYTHON_VERSION) -> str:
     return f'/uv/uv run --no-project --python {python_version} python /sensor/probe.py'
 
 
-@lru_cache(maxsize=1)
+@cache
 def portable_uv() -> Path:
     """Download the uv build that runs in any image, and hand back its path.
 
@@ -224,7 +203,7 @@ def portable_uv() -> Path:
         check=False,
     ).stdout.split()
     if len(reported) < 2:
-        unavailable('docker', 'the uv version of this machine cannot be read')
+        pytest.fail('the uv version of this machine cannot be read')
 
     version = reported[1]
 
@@ -234,7 +213,7 @@ def portable_uv() -> Path:
     UV_DOWNLOADS.mkdir(parents=True, exist_ok=True)
     archive = UV_DOWNLOADS / 'uv.tar.gz'
     if not command_works(['curl', '-fsSL', '-o', str(archive), url]):
-        unavailable('docker', f'{url} cannot be downloaded')
+        pytest.fail(f'{url} cannot be downloaded')
 
     with tarfile.open(archive) as tar:
         member = next(entry for entry in tar.getmembers() if entry.name.endswith('/uv'))
@@ -253,9 +232,9 @@ def probe_in_container(
     command: list[str] | None = None,
 ) -> Reading:
     """Run the probe in a fresh container. The arguments go to `docker run`."""
-    cache = UV_DOWNLOADS / 'cache'
+    uv_cache = UV_DOWNLOADS / 'cache'
     interpreters = UV_DOWNLOADS / 'python'
-    cache.mkdir(parents=True, exist_ok=True)
+    uv_cache.mkdir(parents=True, exist_ok=True)
     interpreters.mkdir(parents=True, exist_ok=True)
 
     return run(
@@ -270,7 +249,7 @@ def probe_in_container(
             '--volume',
             f'{portable_uv()}:/uv/uv:ro',
             '--volume',
-            f'{cache}:/uv/cache',
+            f'{uv_cache}:/uv/cache',
             '--volume',
             f'{interpreters}:/uv/python',
             '--env',
@@ -286,18 +265,13 @@ def probe_in_container(
     )
 
 
-def pull_image(image: str) -> bool:
-    """Pull one image, and report whether it arrived.
+def pull_image(image: str) -> None:
+    """Pull one image ahead of the run that needs it, whether or not it arrives.
 
-    Pulling gets its own generous timeout: inside a virtual machine the network is slow enough that the
-    default one would report a working registry as a missing image.
+    Pulling separately gets its own generous timeout, which a slow guest network needs. A failure is no
+    verdict: the image may already be here, and where it is not, the `docker run` that follows says so.
     """
-    return command_works(['docker', 'pull', '--quiet', image], timeout=TIMEOUT_SECONDS)
-
-
-def have(tool: str) -> bool:
-    """Whether a command exists on this machine."""
-    return shutil.which(tool) is not None
+    command_works(['docker', 'pull', '--quiet', image], timeout=TIMEOUT_SECONDS)
 
 
 def command_works(command: list[str], *, timeout: int = 60) -> bool:
@@ -319,8 +293,8 @@ def command_works(command: list[str], *, timeout: int = 60) -> bool:
 def machine_cpu_count() -> int:
     """The cores of this machine, counted independently of the package.
 
-    The package answers this with `get_machine_cpu_count()`. This one deliberately does not use it: a test
-    that asks the subject for the expected value proves nothing.
+    Not the `get_machine_cpu_count()` of the package: a test that asks the subject for the expected value
+    proves nothing.
     """
     return os.sysconf('SC_NPROCESSORS_ONLN')
 
@@ -339,14 +313,13 @@ def machine_memory_bytes() -> int:
         if line.startswith('MemTotal:'):
             return int(line.split()[1]) * 1024
 
-    pytest.skip('/proc/meminfo carries no MemTotal')
+    pytest.fail('/proc/meminfo carries no MemTotal')
 
 
 def notices_about(reading: Reading, metric: str) -> list[str]:
     """The notices that explain a dropped reading of one metric.
 
-    A notice of the other metric is no explanation, so the two are told apart here rather than at each call
-    site. The machine facts belong to the metric they were compared against.
+    A notice of the other metric is no explanation, so the two are told apart here.
     """
     prefixes = {'memory': ('memory', 'machine-memory'), 'cpu': ('cpu',)}[metric]
 
@@ -356,17 +329,14 @@ def notices_about(reading: Reading, metric: str) -> list[str]:
 def check_invariants(reading: Reading) -> None:
     """Check what must hold of every reading, whatever the environment.
 
-    Called by every test on top of its own assertions. A reported limit has to be real, and a missing one has
-    to be explained.
+    A reported limit has to be real, and a missing one has to be explained.
     """
-    # The probe reads `__version__`, which the package resolves lazily on first access. Nothing else in the
-    # suite touches that path, and a source tree nothing installed reports `unknown` rather than nothing.
+    # `__version__` resolves lazily on first access, and nothing else in the suite touches that path.
     assert reading.version
 
     if reading.memory_limit is not None:
         assert reading.working_set is not None
-        # The probe charged this much anonymous memory to its own cgroup before reading, so a working set
-        # below it is not the memory of this process - a raw counter, a stale file, or another cgroup.
+        # The probe charged this much to its own cgroup first, so a smaller working set is not this process.
         assert reading.allocated <= reading.working_set <= reading.memory_limit
         assert reading.machine_memory_bytes is not None
         assert reading.memory_limit < reading.machine_memory_bytes
@@ -388,8 +358,7 @@ def check_invariants(reading: Reading) -> None:
         if reading.cpu_used_ratio is None:
             assert 'cpu-usage-scope-mismatch' in reading.notices
         else:
-            # The probe keeps a core busy while it measures, so a rate of nothing means the time was counted
-            # somewhere this process is not. The level it was counted at is named next to the failure.
+            # The probe keeps a core busy while it measures, so a rate of nothing was counted elsewhere.
             assert 0.0 < reading.cpu_used_ratio <= 1.0
             assert reading.cpu_rate_level is not None
         assert reading.cpu_limit_level is not None
