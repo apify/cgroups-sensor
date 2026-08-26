@@ -843,14 +843,20 @@ def test_locate_cpu_usage_uses_the_unified_hierarchy_when_nothing_else_counts(
     assert cgroup.read_cpu_usage() == 777.0
 
 
-def test_locate_cpu_usage_keeps_a_unified_hierarchy_that_carries_controllers(
+def test_locate_cpu_usage_keeps_a_unified_hierarchy_that_carries_the_cpu_controller(
     fake_cgroup: Callable[..., Path],
 ) -> None:
-    """Reads the unified hierarchy where it is the real one, which the controllers it lists say."""
+    """Reads the unified hierarchy where it does carry the CPU controller, whatever else is listed with it."""
     fake_cgroup(
-        mountinfo=V2_MOUNTINFO,
-        self_cgroup=V2_SELF_CGROUP.format(path='/'),
-        files={'cgroup.controllers': 'cpuset cpu memory pids\n', 'cpu.stat': 'usage_usec 2500000\n'},
+        # Only `cpuacct` stays on cgroup v1, which leaves the CPU controller free to be bound to the cgroup2
+        # mount. The two hierarchies name different cgroups, so reading the wrong one is visible below.
+        mountinfo=HYBRID_MOUNTINFO.replace('cpu,cpuacct', 'cpuacct'),
+        self_cgroup=HYBRID_SELF_CGROUP.replace('cpu,cpuacct', 'cpuacct'),
+        files={
+            'unified/cgroup.controllers': 'cpuset cpu memory pids\n',
+            'unified/system.slice/docker.service/cpu.stat': 'usage_usec 2500000\n',
+            'cpuacct/docker/abc/cpuacct.usage': '999000000\n',
+        },
     )
 
     controller = cgroup.locate_controllers().cpu_usage

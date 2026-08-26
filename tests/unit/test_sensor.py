@@ -14,13 +14,34 @@ import pytest
 import cgroups_sensor
 from cgroups_sensor import _cgroup, _sensor
 
-from .conftest import V1_CPU_SPLIT_MOUNTINFO, V1_MOUNTINFO, V1_SELF_CGROUP, V2_MOUNTINFO, V2_SELF_CGROUP
+from .conftest import (
+    HYBRID_MOUNTINFO,
+    HYBRID_SELF_CGROUP,
+    V1_CPU_SPLIT_MOUNTINFO,
+    V1_MOUNTINFO,
+    V1_SELF_CGROUP,
+    V2_MOUNTINFO,
+    V2_SELF_CGROUP,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 MACHINE_TOTAL_BYTES = 8 * 1024**3
 MACHINE_CORES = 8
+
+HYBRID_STRAY_FILES = {
+    # A controller the cgroup v1 hierarchies did not claim rides the cgroup2 mount, so its list is not empty.
+    'unified/cgroup.controllers': 'hugetlb\n',
+    # systemd tracks this process as the docker service there, so that counter is the daemon's whole scope.
+    'unified/system.slice/docker.service/cpu.stat': 'usage_usec 999000000\n',
+    'unified/cpu.stat': 'usage_usec 999000000\n',
+    # The quota and the time of the container itself, both on cgroup v1 where the runtime wrote them.
+    'cpu,cpuacct/docker/abc/cpu.cfs_quota_us': '50000\n',
+    'cpu,cpuacct/docker/abc/cpu.cfs_period_us': '100000\n',
+    'cpu,cpuacct/docker/abc/cpuacct.usage': '3000000000\n',
+}
+"""A hybrid layout with `hugetlb` on the unified mount and every CPU metric on cgroup v1."""
 
 # The autouse fixture below replaces these module attributes, so the tests of the real implementations go
 # through references captured before any fixture runs.
@@ -297,6 +318,44 @@ def test_get_cpu_used_ratio_no_counter(fake_cgroup: Callable[..., Path]) -> None
     )
 
     assert cgroups_sensor.get_cpu_used_ratio() is None
+
+
+def test_get_cpu_usage_hybrid_with_a_stray_controller(fake_cgroup: Callable[..., Path]) -> None:
+    """Reads the time through the interface the limits came from, not through a stray controller's."""
+    root = fake_cgroup(
+        mountinfo=HYBRID_MOUNTINFO,
+        self_cgroup=HYBRID_SELF_CGROUP,
+        files=HYBRID_STRAY_FILES,
+    )
+
+    assert cgroups_sensor.get_cpu_usage() == pytest.approx(3.0)
+
+    description = cgroups_sensor.describe()
+    assert description.cpu_usage_source is not None
+    assert description.cpu_usage_source.interface is cgroups_sensor.Interface.CGROUP_V1
+    # The rate is measurable only where the quota binds, and the comount carries the counter right there.
+    assert description.cpu_rate_level == str(root / 'cpu,cpuacct' / 'docker' / 'abc')
+
+
+def test_get_cpu_used_ratio_hybrid_with_a_stray_controller(
+    fake_cgroup: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Measures the rate against the cgroup v1 quota instead of reporting a scope mismatch."""
+    root = fake_cgroup(
+        mountinfo=HYBRID_MOUNTINFO,
+        self_cgroup=HYBRID_SELF_CGROUP,
+        files=HYBRID_STRAY_FILES,
+    )
+
+    def advance(_seconds: float) -> None:
+        # A quarter of a CPU second over one second of the clock, against half a core: half the allowance.
+        (root / 'cpu,cpuacct' / 'docker' / 'abc' / 'cpuacct.usage').write_text('3250000000\n')
+
+    fake_time(monkeypatch, sleep=advance)
+
+    assert cgroups_sensor.get_cpu_used_ratio() == pytest.approx(0.5)
+    assert notice_codes('cpu') == ()
 
 
 def test_get_cpu_used_ratio_second_reading_fails(

@@ -619,7 +619,7 @@ def _locate_cpu_usage(hierarchies: _Hierarchies) -> Controller | None:
     which can be mounted apart from the quota.
     """
     unified = hierarchies.unified
-    with_controllers = unified if unified is not None and _carries_controllers(unified) else None
+    with_controllers = unified if unified is not None and _carries_controller(unified, _V2_CPU_CONTROLLER) else None
 
     counter = _controller_in(with_controllers, probe=_V2.cpu_usage, is_v2=True) or _controller_in(
         hierarchies.v1.get(_V1_CPU_ACCT), probe=_V1.cpu_usage, is_v2=False
@@ -628,14 +628,14 @@ def _locate_cpu_usage(hierarchies: _Hierarchies) -> Controller | None:
     return counter or _controller_in(unified, probe=_V2.cpu_usage, is_v2=True)
 
 
-def _carries_controllers(hierarchy: _Hierarchy) -> bool:
-    """Whether any controller is bound to this cgroup2 hierarchy.
+def _carries_controller(hierarchy: _Hierarchy, name: str) -> bool:
+    """Whether one named controller is bound to this cgroup2 hierarchy.
 
-    The mount lists them at its top. A hybrid machine leaves that list empty, because every controller is
-    mounted on a cgroup v1 hierarchy of its own instead.
+    The mount lists the bound controllers at its top, by name. A hybrid machine leaves that list empty when
+    its cgroup v1 hierarchies claim every controller, and leaves in it whatever they did not claim.
     """
     try:
-        return bool((hierarchy.mount_point / _V2_CONTROLLERS).read_text().strip())
+        return name in (hierarchy.mount_point / _V2_CONTROLLERS).read_text().split()
     except (OSError, ValueError):
         return False
 
