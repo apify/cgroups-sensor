@@ -101,7 +101,7 @@ class NoticeCode(str, Enum):
     """The limit is at least the memory of the machine, which is how an unrestricted group spells "no limit"."""
 
     MEMORY_USAGE_UNAVAILABLE = 'memory-usage-unavailable'
-    """A limit was found, but the level holding it reports no usage to pair with it."""
+    """A limit was found, but some level on the chain reports no usage to pair with it."""
 
     MACHINE_MEMORY_UNKNOWN = 'machine-memory-unknown'
     """The memory of the machine cannot be read, so a limit cannot be told apart from a sentinel."""
@@ -173,9 +173,9 @@ class Source:
     levels: tuple[str, ...]
     """The levels the metric is looked for in. The cgroup of this process first, then its ancestors.
 
-    A level here need not carry the metric's files today. They appear the moment a limit is written there, and
-    discovery happens only once, so the whole chain is kept. `memory_limit_level` and
-    `cpu_limit_level` name the levels the readings actually came from.
+    Most of a chain holds no limit, and the whole chain is kept regardless: a limit can be written to any level
+    later, and discovery happens only once. `memory_limit_level` and `cpu_limit_level` name the levels the
+    readings actually came from.
     """
 
 
@@ -242,8 +242,8 @@ class Description:
     """The level holding `raw_memory_limit`. `None` when no level holds one.
 
     The tightest limit of the chain wins, which is often not the cgroup of this process. Under Kubernetes it
-    is regularly the pod or the QoS class above it. The level is named even where the filters drop that limit,
-    and a notice then says why.
+    is regularly the pod, or the `kubepods` slice holding what the node may hand out. The level is named even
+    where the filters drop that limit, and a notice then says why.
     """
 
     cpu_limit_level: str | None

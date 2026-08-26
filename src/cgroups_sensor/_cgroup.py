@@ -368,14 +368,8 @@ def read_memory() -> RawMemory:
 
     tightest = min(levels, key=lambda level: level.limit)
 
-    # Any level can be the closest to its own limit: memory is charged up the whole chain, so an ancestor
-    # counts what its other children use as well. A pod at 96 of its 100 bytes can sit under a QoS class at
-    # 498 of 500 - the tighter limit is the class's, the tighter distance the pod's. Which is why every level
-    # is measured below, and not just this one.
-    #
-    # Any level whose usage cannot be read leaves one distance unknown, and an unknown may be the smallest.
-    # Taking the minimum of what is left would then promise memory the kernel will not give, so the pair is
-    # dropped and the ceiling reported alone.
+    # An unknown distance may be the smallest one, so the minimum of the rest would promise memory the kernel
+    # will not give.
     if any(level.usage is None for level in levels):
         return RawMemory(
             limit=tightest.limit,
@@ -384,11 +378,11 @@ def read_memory() -> RawMemory:
             unreadable_directory=None,
         )
 
+    # Every level, not only the tightest: memory is charged up the whole chain, so an ancestor counts what its
+    # other children use, and its distance can be the smaller one.
     distances = [level.limit - level.usage for level in levels if level.usage is not None]
 
-    # The tightest level is among these, so the smallest distance never exceeds its limit and the working set
-    # never goes negative. It can still exceed the limit the other way: a cgroup sits above its limit while
-    # the kernel reclaims, which makes that level's distance negative.
+    # A cgroup sits above its limit while the kernel reclaims, and that level's distance is then negative.
     used = min(tightest.limit - min(distances), tightest.limit)
 
     return RawMemory(
