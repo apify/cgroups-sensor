@@ -127,6 +127,12 @@ class NoticeCode(str, Enum):
     CPU_LIMIT_UNREADABLE = 'cpu-limit-unreadable'
     """A level holds a CPU limit that says nothing usable, so what it enforces is unknown."""
 
+    MEMORY_MOUNT_HIDES_ANCESTORS = 'memory-mount-hides-ancestors'
+    """The memory mount exposes part of its hierarchy, so a limit above it is enforced but never read."""
+
+    CPU_MOUNT_HIDES_ANCESTORS = 'cpu-mount-hides-ancestors'
+    """A CPU mount exposes part of its hierarchy, so a limit above it is enforced but never read."""
+
 
 @dataclass(frozen=True)
 class Notice:
@@ -425,7 +431,31 @@ def describe() -> Description:
         cpu_rate_level=str(cpu.usage_directory) if cpu.usage_directory is not None else None,
         machine_memory_bytes=machine_memory,
         machine_cpu_count=machine_cpus,
-        notices=memory.notices + cpu.notices,
+        notices=memory.notices + cpu.notices + _hidden_ancestor_notices(controllers),
+    )
+
+
+def _hidden_ancestor_notices(controllers: _cgroup.Controllers) -> tuple[Notice, ...]:
+    """Name the mounts that expose a subtree, per metric reading through them.
+
+    A metric is named separately because the two can be read through different mounts, and only one of them
+    may be truncated.
+    """
+    cpu = (controllers.cpu_quota, controllers.cpu_set, controllers.cpu_usage)
+
+    return _truncated_mounts(NoticeCode.MEMORY_MOUNT_HIDES_ANCESTORS, (controllers.memory,)) + _truncated_mounts(
+        NoticeCode.CPU_MOUNT_HIDES_ANCESTORS, cpu
+    )
+
+
+def _truncated_mounts(code: NoticeCode, located: tuple[_cgroup.Controller | None, ...]) -> tuple[Notice, ...]:
+    """One notice per mount among these controllers that covers only part of its hierarchy."""
+    # The last directory is the mount point, where the walk had to stop. The root says how much it covers.
+    truncated = {(str(c.dirs[-1]), c.mount_root) for c in located if c is not None and c.mount_root != '/'}
+
+    return tuple(
+        Notice(code=code, message=f'{point} exposes only {root}, so a limit above it is enforced but unreadable')
+        for point, root in sorted(truncated)
     )
 
 

@@ -320,6 +320,33 @@ def test_get_cpu_used_ratio_no_counter(fake_cgroup: Callable[..., Path]) -> None
     assert cgroups_sensor.get_cpu_used_ratio() is None
 
 
+def test_notices_a_mount_that_hides_the_ancestors(fake_cgroup: Callable[..., Path]) -> None:
+    """Says so when a mount exposes a subtree, because a limit above it is enforced and never read."""
+    fake_cgroup(
+        # The mount root is the cgroup of this process, so `/tenant` above it exists and cannot be reached.
+        mountinfo='30 25 0:26 /tenant/app {root}/memory rw,nosuid shared:14 - cgroup cgroup rw,memory',
+        self_cgroup='2:memory:/tenant/app\n',
+        files={
+            'memory/memory.usage_in_bytes': '1000\n',
+            'memory/memory.stat': 'total_inactive_file 0\n',
+        },
+    )
+
+    assert 'memory-mount-hides-ancestors' in notice_codes('memory')
+    assert 'cpu-mount-hides-ancestors' not in notice_codes('cpu')
+
+
+def test_no_notice_when_the_mount_covers_the_whole_hierarchy(fake_cgroup: Callable[..., Path]) -> None:
+    """Stays silent where the mount root is the hierarchy root, which is every ordinary machine."""
+    fake_cgroup(
+        mountinfo=V2_MOUNTINFO,
+        self_cgroup=V2_SELF_CGROUP.format(path='/pod'),
+        files={'pod/memory.max': '1000\n', 'pod/memory.current': '100\n', 'pod/memory.stat': 'inactive_file 0\n'},
+    )
+
+    assert 'memory-mount-hides-ancestors' not in notice_codes()
+
+
 def test_get_cpu_usage_hybrid_with_a_stray_controller(fake_cgroup: Callable[..., Path]) -> None:
     """Reads the time through the interface the limits came from, not through a stray controller's."""
     root = fake_cgroup(

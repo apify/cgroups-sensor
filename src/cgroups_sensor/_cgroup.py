@@ -190,6 +190,9 @@ class Controller:
     is_v2: bool
     """Whether the controller provides the cgroup v2 interface. It spells the control files differently."""
 
+    mount_root: str
+    """The subtree of the hierarchy its mount exposes, as `/proc/self/mountinfo` spells it."""
+
     dirs: tuple[Path, ...]
     """The cgroup of this process first, then its ancestors up to the mount point.
 
@@ -710,7 +713,10 @@ def _controller_in(hierarchy: _Hierarchy | None, *, probe: str, is_v2: bool) -> 
 
     dirs = _candidate_dirs(hierarchy)
 
-    return Controller(is_v2=is_v2, dirs=dirs) if _first_with(dirs, probe) is not None else None
+    if _first_with(dirs, probe) is None:
+        return None
+
+    return Controller(is_v2=is_v2, mount_root=hierarchy.mount_root, dirs=dirs)
 
 
 def _first_with(dirs: tuple[Path, ...], file_name: str) -> Path | None:
