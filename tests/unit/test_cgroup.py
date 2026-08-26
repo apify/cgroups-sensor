@@ -416,33 +416,54 @@ def test_read_memory_tightest_level(fake_cgroup: Callable[..., Path]) -> None:
     )
 
 
-def test_read_memory_smallest_distance(fake_cgroup: Callable[..., Path]) -> None:
-    """Keeps the smallest distance to a limit, which is not always at the tightest one.
-
-    A kill follows from the memory that can still be allocated, so that distance is what has to survive the
-    move onto the tightest limit.
-    """
+def test_read_memory_tighter_ancestor(fake_cgroup: Callable[..., Path]) -> None:
+    """Reports an ancestor's limit where it is tighter than the one this cgroup holds."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
-        self_cgroup=V2_SELF_CGROUP.format(path='/qos/pod'),
+        self_cgroup=V2_SELF_CGROUP.format(path='/kubepods/pod'),
         files={
-            # The pod is nearly full of its own generous limit.
-            'qos/pod/memory.max': '1000\n',
-            'qos/pod/memory.current': '960\n',
-            'qos/pod/memory.stat': 'inactive_file 10\n',
-            # The QoS class above is tighter, but half of what it holds belongs to the sibling pods.
-            'qos/memory.max': '500\n',
-            'qos/memory.current': '260\n',
-            'qos/memory.stat': 'inactive_file 10\n',
+            # The pod asks for more than the node has to give, which nothing forbids it to do.
+            'kubepods/pod/memory.max': '1000\n',
+            'kubepods/pod/memory.current': '260\n',
+            'kubepods/pod/memory.stat': 'inactive_file 10\n',
+            # The node caps what it hands out, and the sibling pods hold 200 of what is charged here.
+            'kubepods/memory.max': '500\n',
+            'kubepods/memory.current': '460\n',
+            'kubepods/memory.stat': 'inactive_file 10\n',
         },
     )
 
-    # The pod is 50 bytes from its own limit, the QoS class 250 from its. The tighter distance wins, and the
-    # limit it is expressed against is the QoS class's.
+    # 50 bytes left at the node against 750 at the pod's own limit, so the pod's limit never binds.
     assert cgroup.read_memory() == cgroup.RawMemory(
         limit=500,
         working_set=450,
-        limit_directory=root / 'qos',
+        limit_directory=root / 'kubepods',
+        unreadable_directory=None,
+    )
+
+
+def test_read_memory_smallest_distance(fake_cgroup: Callable[..., Path]) -> None:
+    """Keeps the smallest distance to a limit, which is not always at the tightest one."""
+    root = fake_cgroup(
+        mountinfo=V2_MOUNTINFO,
+        self_cgroup=V2_SELF_CGROUP.format(path='/kubepods/pod'),
+        files={
+            # This pod looks 80 bytes from being killed.
+            'kubepods/pod/memory.max': '100\n',
+            'kubepods/pod/memory.current': '30\n',
+            'kubepods/pod/memory.stat': 'inactive_file 10\n',
+            # The node allows 20 more, and what it holds covers the sibling pods too.
+            'kubepods/memory.max': '120\n',
+            'kubepods/memory.current': '110\n',
+            'kubepods/memory.stat': 'inactive_file 10\n',
+        },
+    )
+
+    # The tighter limit is the pod's, the tighter distance the node's: 20 bytes left, not 80.
+    assert cgroup.read_memory() == cgroup.RawMemory(
+        limit=100,
+        working_set=80,
+        limit_directory=root / 'kubepods' / 'pod',
         unreadable_directory=None,
     )
 
@@ -891,32 +912,6 @@ def test_cpu_usage_dir_rejects_a_group_of_the_same_name(fake_cgroup: Callable[..
     assert quota.cores == 2.0
     assert quota.limit_directory == root / 'cpu' / 'limited'
     assert quota.usage_directory is None
-
-
-def test_read_memory_ancestor_without_usage_drops_the_distance(fake_cgroup: Callable[..., Path]) -> None:
-    """Drops the working set when any level's usage is missing, not only the tightest level's.
-
-    Memory is charged up the chain, so the level closest to its own limit can be any of them. An ancestor
-    whose usage cannot be read leaves one distance unknown, and an unknown may be the smallest one.
-    """
-    root = fake_cgroup(
-        mountinfo=V2_MOUNTINFO,
-        self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
-        files={
-            'pod/container/memory.max': '1000\n',
-            'pod/container/memory.current': '100\n',
-            'pod/container/memory.stat': 'inactive_file 0\n',
-            # The tighter limit, with nothing saying how close the pod is to it.
-            'pod/memory.max': '500\n',
-        },
-    )
-
-    assert cgroup.read_memory() == cgroup.RawMemory(
-        limit=500,
-        working_set=None,
-        limit_directory=root / 'pod',
-        unreadable_directory=None,
-    )
 
 
 def test_read_memory_unreadable_limit(fake_cgroup: Callable[..., Path]) -> None:
