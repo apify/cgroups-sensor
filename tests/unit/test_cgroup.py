@@ -32,13 +32,13 @@ def test_read_hierarchies_v2(fake_cgroup: Callable[..., Path]) -> None:
         files={'init.scope/cgroup.procs': ''},
     )
 
-    unified, controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root
-    assert unified.mount_root == '/'
-    assert unified.own_path == '/init.scope'
-    assert controllers == {}
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root
+    assert hierarchies.unified.mount_root == '/'
+    assert hierarchies.unified.own_path == '/init.scope'
+    assert hierarchies.v1 == {}
 
 
 def test_read_hierarchies_v1(fake_cgroup: Callable[..., Path]) -> None:
@@ -54,15 +54,15 @@ def test_read_hierarchies_v1(fake_cgroup: Callable[..., Path]) -> None:
         },
     )
 
-    unified, controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is None
-    assert controllers['memory'].mount_point == root / 'memory'
-    assert controllers['memory'].own_path == '/docker/abc'
-    assert controllers['cpuset'].mount_point == root / 'cpuset'
+    assert hierarchies.unified is None
+    assert hierarchies.v1['memory'].mount_point == root / 'memory'
+    assert hierarchies.v1['memory'].own_path == '/docker/abc'
+    assert hierarchies.v1['cpuset'].mount_point == root / 'cpuset'
     # Otherwise the CPU metrics get split across versions.
-    assert controllers['cpu'].mount_point == root / 'cpu,cpuacct'
-    assert controllers['cpuacct'].mount_point == root / 'cpu,cpuacct'
+    assert hierarchies.v1['cpu'].mount_point == root / 'cpu,cpuacct'
+    assert hierarchies.v1['cpuacct'].mount_point == root / 'cpu,cpuacct'
 
 
 def test_read_hierarchies_bad_lines(fake_cgroup: Callable[..., Path]) -> None:
@@ -78,10 +78,10 @@ def test_read_hierarchies_bad_lines(fake_cgroup: Callable[..., Path]) -> None:
     )
     root = fake_cgroup(mountinfo=mountinfo, self_cgroup=V2_SELF_CGROUP.format(path='/'), files={})
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root
 
 
 def test_read_hierarchies_first_cgroup2_mount_wins(fake_cgroup: Callable[..., Path]) -> None:
@@ -96,10 +96,10 @@ def test_read_hierarchies_first_cgroup2_mount_wins(fake_cgroup: Callable[..., Pa
         files={'first/cgroup.controllers': 'cpu memory\n', 'second/cgroup.controllers': 'cpu memory\n'},
     )
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root / 'first'
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root / 'first'
 
 
 def test_read_hierarchies_conventional_mount_point_wins(
@@ -121,10 +121,10 @@ def test_read_hierarchies_conventional_mount_point_wins(
     )
     monkeypatch.setattr(cgroup, '_CONVENTIONAL_MOUNT_POINT', root / 'conventional')
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root / 'conventional'
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root / 'conventional'
 
 
 def test_read_hierarchies_skips_a_foreign_cgroup2_mount(fake_cgroup: Callable[..., Path]) -> None:
@@ -143,10 +143,10 @@ def test_read_hierarchies_skips_a_foreign_cgroup2_mount(fake_cgroup: Callable[..
         files={'foreign/memory.max': '1000\n', 'ours/mine/memory.max': '2000\n'},
     )
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root / 'ours'
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root / 'ours'
 
 
 def test_read_hierarchies_skips_a_mount_without_this_cgroup(fake_cgroup: Callable[..., Path]) -> None:
@@ -161,10 +161,10 @@ def test_read_hierarchies_skips_a_mount_without_this_cgroup(fake_cgroup: Callabl
         files={'stale/other/memory.max': '1000\n', 'live/mine/memory.max': '2000\n'},
     )
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root / 'live'
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root / 'live'
 
 
 def test_read_hierarchies_no_unified_when_no_mount_covers(fake_cgroup: Callable[..., Path]) -> None:
@@ -179,9 +179,9 @@ def test_read_hierarchies_no_unified_when_no_mount_covers(fake_cgroup: Callable[
         files={'only/memory.max': '1000\n', 'only/memory.current': '900\n', 'only/memory.stat': 'inactive_file 0\n'},
     )
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is None
+    assert hierarchies.unified is None
     assert cgroup.read_memory() == cgroup.RawMemory(
         limit=None,
         working_set=None,
@@ -242,11 +242,11 @@ def test_read_hierarchies_escaped_paths(fake_cgroup: Callable[..., Path]) -> Non
         files={'mnt point/cgroup.procs': ''},
     )
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root / 'mnt point'
-    assert unified.mount_root == '/docker abc'
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root / 'mnt point'
+    assert hierarchies.unified.mount_root == '/docker abc'
 
 
 @pytest.mark.parametrize(
@@ -1202,10 +1202,10 @@ def test_read_hierarchies_undecodable_path(fake_cgroup: Callable[..., Path], tmp
     mountinfo = tmp_path / 'mountinfo'
     mountinfo.write_bytes(b'24 30 0:21 / /mnt/\xff\xfe rw - ext4 /dev/sda1 rw\n' + mountinfo.read_bytes())
 
-    unified, _controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert unified is not None
-    assert unified.mount_point == root
+    assert hierarchies.unified is not None
+    assert hierarchies.unified.mount_point == root
 
 
 def test_read_cpu_quota_tightest_level(fake_cgroup: Callable[..., Path]) -> None:
@@ -1379,9 +1379,9 @@ def test_read_hierarchies_first_v1_mount_wins(fake_cgroup: Callable[..., Path]) 
         files={'first/cgroup.procs': '', 'second/cgroup.procs': ''},
     )
 
-    _unified, controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert controllers['memory'].mount_point == root / 'first'
+    assert hierarchies.v1['memory'].mount_point == root / 'first'
 
 
 def test_read_hierarchies_skips_a_foreign_v1_mount(fake_cgroup: Callable[..., Path]) -> None:
@@ -1407,9 +1407,9 @@ def test_read_hierarchies_skips_a_foreign_v1_mount(fake_cgroup: Callable[..., Pa
         },
     )
 
-    _unified, controllers = cgroup._read_hierarchies()
+    hierarchies = cgroup._read_hierarchies()
 
-    assert controllers['memory'].mount_point == root / 'ours'
+    assert hierarchies.v1['memory'].mount_point == root / 'ours'
     assert cgroup.read_memory() == cgroup.RawMemory(
         limit=2000,
         working_set=100,

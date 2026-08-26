@@ -16,9 +16,6 @@ _PROC_SELF_MOUNTINFO = Path('/proc/self/mountinfo')
 _MICROSECONDS_PER_SECOND = 1_000_000
 _NANOSECONDS_PER_SECOND = 1_000_000_000
 
-_V1_CONTROLLER_NAMES = frozenset({'memory', 'cpu', 'cpuacct', 'cpuset'})
-"""The controllers worth recording."""
-
 _CONVENTIONAL_MOUNT_POINT = Path('/sys/fs/cgroup')
 """Where a hierarchy is mounted unless someone chose otherwise. Used only to break a tie."""
 
@@ -85,9 +82,43 @@ _V1_CPU_SET_EFFECTIVE = 'cpuset.effective_cpus'
 """What a cgroup v1 cpuset may really run on, inheritance resolved. `cpuset.cpus` holds what was configured
 there, and an empty one means "whatever the parent allows"."""
 
+_V2_CPU_CONTROLLER = 'cpu'
+"""How `cgroup.controllers` names the controller that accounts CPU time."""
+
 _V2_CONTROLLERS = 'cgroup.controllers'
 """Lists the controllers bound to a cgroup v2 group. It carries no metric, so it has no place in the table
 either - it is read to tell a real unified hierarchy from the controller-less one a hybrid machine mounts."""
+
+
+@dataclass(frozen=True)
+class _Metric:
+    """A metric this module reads, and how each interface says a level carries it.
+
+    The three fields are one fact stated three ways, so they are named together rather than passed apart. A
+    caller names the metric; which controller and which probe follow from it.
+    """
+
+    v1_controller: str
+    """The cgroup v1 controller carrying the metric. Several can share one mount, as `cpu,cpuacct` usually do."""
+
+    v2_probe: str
+    """The file that exists only where the cgroup v2 hierarchy carries the metric."""
+
+    v1_probe: str
+    """The file cgroup v1 is probed by. Not always the v2 one renamed: a cpuset is probed by the configured
+    set under v1 and by the effective set under v2."""
+
+
+_MEMORY = _Metric(v1_controller='memory', v2_probe=_V2.memory_usage, v1_probe=_V1.memory_usage)
+_CPU_QUOTA = _Metric(v1_controller='cpu', v2_probe=_V2.cpu_quota, v1_probe=_V1.cpu_quota)
+_CPU_SET = _Metric(v1_controller='cpuset', v2_probe=_V2.cpu_set, v1_probe=_V1.cpu_set)
+
+_V1_CPU_ACCT = 'cpuacct'
+"""The cgroup v1 controller counting consumed CPU time. `_locate_cpu_usage` locates it, because `cpu.stat`
+says nothing about where the cgroup v2 metrics live."""
+
+_V1_CONTROLLER_NAMES = frozenset({_V1_CPU_ACCT, *(metric.v1_controller for metric in (_MEMORY, _CPU_QUOTA, _CPU_SET))})
+"""The controllers worth recording: the metrics above, plus the one counting consumed CPU time."""
 
 
 class _UnreadableFileError(Exception):
@@ -134,6 +165,22 @@ class _Hierarchy:
 
     own_path: str
     """The cgroup this process belongs to, as `/proc/self/cgroup` spells it."""
+
+
+@dataclass(frozen=True)
+class _Hierarchies:
+    """The cgroup hierarchies this process belongs to. The two interfaces are kept apart.
+
+    They are not interchangeable. Each spells its control files differently, so which one a controller was
+    found in decides how it is read afterwards.
+    """
+
+    unified: _Hierarchy | None
+    """The cgroup v2 hierarchy, where one is mounted and covers this process. A single hierarchy serves
+    whichever controllers are bound to it."""
+
+    v1: dict[str, _Hierarchy]
+    """The cgroup v1 hierarchies, keyed by controller name. Controllers sharing a mount get an entry each."""
 
 
 @dataclass(frozen=True)
@@ -536,16 +583,16 @@ def locate_controllers() -> Controllers:
     read again on every sample.
     """
     try:
-        unified, v1 = _read_hierarchies()
+        hierarchies = _read_hierarchies()
     except (OSError, ValueError):
         # Not Linux, `/proc` is not mounted, or its content does not decode. Nothing to read either way.
         return Controllers(memory=None, cpu_quota=None, cpu_usage=None, cpu_set=None)
 
     return Controllers(
-        memory=_locate_controller(unified, v1, 'memory', v2_probe=_V2.memory_usage, v1_probe=_V1.memory_usage),
-        cpu_quota=_locate_controller(unified, v1, 'cpu', v2_probe=_V2.cpu_quota, v1_probe=_V1.cpu_quota),
-        cpu_usage=_locate_cpu_usage(unified, v1),
-        cpu_set=_locate_controller(unified, v1, 'cpuset', v2_probe=_V2.cpu_set, v1_probe=_V1.cpu_set),
+        memory=_locate_controller(hierarchies, _MEMORY),
+        cpu_quota=_locate_controller(hierarchies, _CPU_QUOTA),
+        cpu_usage=_locate_cpu_usage(hierarchies),
+        cpu_set=_locate_controller(hierarchies, _CPU_SET),
     )
 
 
@@ -560,7 +607,7 @@ if hasattr(os, 'register_at_fork'):
     os.register_at_fork(after_in_child=clear_cache)
 
 
-def _locate_cpu_usage(unified: _Hierarchy | None, v1: dict[str, _Hierarchy]) -> Controller | None:
+def _locate_cpu_usage(hierarchies: _Hierarchies) -> Controller | None:
     """Locate the counter of consumed CPU time. The hierarchy carrying the limits wins.
 
     Every other metric is probed by a file that exists only where its controller does. `cpu.stat` is not such
@@ -571,8 +618,12 @@ def _locate_cpu_usage(unified: _Hierarchy | None, v1: dict[str, _Hierarchy]) -> 
     where nothing else counts anything. Under cgroup v1 the accounting is `cpuacct`, a controller of its own,
     which can be mounted apart from the quota.
     """
+    unified = hierarchies.unified
     with_controllers = unified if unified is not None and _carries_controllers(unified) else None
-    counter = _locate_controller(with_controllers, v1, 'cpuacct', v2_probe=_V2.cpu_usage, v1_probe=_V1.cpu_usage)
+
+    counter = _controller_in(with_controllers, probe=_V2.cpu_usage, is_v2=True) or _controller_in(
+        hierarchies.v1.get(_V1_CPU_ACCT), probe=_V1.cpu_usage, is_v2=False
+    )
 
     return counter or _controller_in(unified, probe=_V2.cpu_usage, is_v2=True)
 
@@ -635,21 +686,14 @@ def _read_working_set(controller: Controller, directory: Path) -> int | None:
     return max(current - inactive_file, 0)
 
 
-def _locate_controller(
-    unified: _Hierarchy | None,
-    v1: dict[str, _Hierarchy],
-    v1_name: str,
-    *,
-    v2_probe: str,
-    v1_probe: str,
-) -> Controller | None:
-    """Locate the directories of one controller. The cgroup v2 unified hierarchy wins.
+def _locate_controller(hierarchies: _Hierarchies, metric: _Metric) -> Controller | None:
+    """Locate the directories carrying one metric. The cgroup v2 unified hierarchy wins.
 
     A hybrid system can mount both interfaces with only some controllers on the unified hierarchy, so each
     candidate counts only where the file it is probed by exists.
     """
-    return _controller_in(unified, probe=v2_probe, is_v2=True) or _controller_in(
-        v1.get(v1_name), probe=v1_probe, is_v2=False
+    return _controller_in(hierarchies.unified, probe=metric.v2_probe, is_v2=True) or _controller_in(
+        hierarchies.v1.get(metric.v1_controller), probe=metric.v1_probe, is_v2=False
     )
 
 
@@ -716,11 +760,8 @@ def _own_path_within_mount(hierarchy: _Hierarchy) -> tuple[str, ...]:
     return path.parts[1:] if path.is_absolute() else path.parts
 
 
-def _read_hierarchies() -> tuple[_Hierarchy | None, dict[str, _Hierarchy]]:
+def _read_hierarchies() -> _Hierarchies:
     """Locate the mounted cgroup hierarchies and the cgroup this process belongs to in each.
-
-    Returns:
-        The cgroup v2 unified hierarchy, and the cgroup v1 hierarchies keyed by controller.
 
     Raises:
         OSError: If `/proc/self/mountinfo` or `/proc/self/cgroup` cannot be read.
@@ -749,7 +790,7 @@ def _read_hierarchies() -> tuple[_Hierarchy | None, dict[str, _Hierarchy]]:
 
     unified = _pick_unified(mounts, unified_path) if unified_path is not None else None
 
-    return unified, controllers
+    return _Hierarchies(unified=unified, v1=controllers)
 
 
 def _pick_unified(mounts: list[_Mount], own_path: str) -> _Hierarchy | None:
