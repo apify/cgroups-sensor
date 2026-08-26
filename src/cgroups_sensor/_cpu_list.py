@@ -4,14 +4,16 @@ from __future__ import annotations
 def count_cpu_list(cpu_list: str) -> int | None:
     """Count the CPUs in a list of ranges and single numbers, e.g. `0-3,8`.
 
-    The kernel writes this format in more than one place: `cpuset.cpus` inside a cgroup, and
-    `/sys/devices/system/cpu/online` for the machine. It belongs to neither layer, so it lives here.
+    The kernel writes this format in both `cpuset.cpus` and `/sys/devices/system/cpu/online`, and it
+    canonicalizes what it stores: the ranges ascend and never overlap. One that runs backwards or starts
+    inside the range before it is refused rather than repaired, because no kernel wrote it.
 
     Returns:
-        The number of cores, or `None` when the list does not parse. A reversed range does not parse: a real
-        kernel never writes one, but an emulated cgroupfs can, and counting it would yield zero cores.
+        The number of cores, or `None` when the list does not parse.
     """
     count = 0
+    # The highest core counted so far. Below zero because no core number is, so the first range counts whole.
+    counted_to = -1
 
     try:
         for part in cpu_list.split(','):
@@ -20,10 +22,14 @@ def count_cpu_list(cpu_list: str) -> int | None:
             if separator and not last:
                 return None
 
-            span = int(last or first) - int(first) + 1
-            if span <= 0:
+            start, end = int(first), int(last or first)
+            # A reversed range counts zero cores, and one starting inside the previous counts a core twice.
+            # A kernel writes neither: it stores `0-2,1-3` as `0-3`. Verified on cgroup v1 and v2.
+            if end < start or start <= counted_to:
                 return None
-            count += span
+
+            count += end - start + 1
+            counted_to = end
     except ValueError:
         return None
 
