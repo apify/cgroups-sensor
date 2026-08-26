@@ -106,10 +106,7 @@ def test_read_hierarchies_conventional_mount_point_wins(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prefers the conventional mount point over the mount order when both expose this cgroup.
-
-    A second mount of the same hierarchy is somebody's tool. `/sys/fs/cgroup` is where the system put it.
-    """
+    """Prefers the conventional mount point over the mount order when both expose this cgroup."""
     mountinfo = (
         '25 30 0:22 / {root}/elsewhere rw shared:4 - cgroup2 cgroup2 rw,nsdelegate\n'
         '26 30 0:22 / {root}/conventional rw shared:5 - cgroup2 cgroup2 rw,nsdelegate'
@@ -128,11 +125,7 @@ def test_read_hierarchies_conventional_mount_point_wins(
 
 
 def test_read_hierarchies_skips_a_foreign_cgroup2_mount(fake_cgroup: Callable[..., Path]) -> None:
-    """Skips a cgroup2 mount that exposes another subtree, however early it is listed.
-
-    A runtime can bind-mount one container's cgroup into another, and an agent watching the machine mounts a
-    subtree of its own. Reading the first line of the mount table would report those numbers as this process's.
-    """
+    """Skips a cgroup2 mount that exposes another subtree, however early it is listed."""
     mountinfo = (
         '25 30 0:22 /other {root}/foreign rw shared:4 - cgroup2 cgroup2 rw,nsdelegate\n'
         '26 30 0:22 / {root}/ours rw shared:5 - cgroup2 cgroup2 rw,nsdelegate'
@@ -168,10 +161,7 @@ def test_read_hierarchies_skips_a_mount_without_this_cgroup(fake_cgroup: Callabl
 
 
 def test_read_hierarchies_no_unified_when_no_mount_covers(fake_cgroup: Callable[..., Path]) -> None:
-    """Reports no unified hierarchy when none of the mounts exposes this cgroup.
-
-    Reading the mount anyway would answer with the numbers of whatever cgroup sits at the top of it.
-    """
+    """Reports no unified hierarchy when none of the mounts exposes this cgroup."""
     mountinfo = '25 30 0:22 /elsewhere {root}/only rw shared:4 - cgroup2 cgroup2 rw,nsdelegate'
     fake_cgroup(
         mountinfo=mountinfo,
@@ -191,11 +181,7 @@ def test_read_hierarchies_no_unified_when_no_mount_covers(fake_cgroup: Callable[
 
 
 def test_read_hierarchies_v1_answers_when_no_cgroup2_mount_covers(fake_cgroup: Callable[..., Path]) -> None:
-    """Leaves the cgroup v1 hierarchies to answer when the cgroup2 mount is somebody else's.
-
-    A hybrid machine carries both, and a foreign cgroup2 mount claimed as ours would mask the v1 controllers
-    that do describe this process.
-    """
+    """Leaves the cgroup v1 hierarchies to answer when the cgroup2 mount is somebody else's."""
     foreign = '25 30 0:22 /elsewhere {root}/foreign rw shared:4 - cgroup2 cgroup2 rw,nsdelegate'
     root = fake_cgroup(
         mountinfo=f'{foreign}\n{V1_MOUNTINFO}',
@@ -469,10 +455,7 @@ def test_read_memory_smallest_distance(fake_cgroup: Callable[..., Path]) -> None
 
 
 def test_read_memory_partial_level(fake_cgroup: Callable[..., Path]) -> None:
-    """Reports the ceiling without a usage when the tightest level has none to pair with it.
-
-    The looser levels know only their own distance, which would overstate what can still be allocated here.
-    """
+    """Reports the ceiling without a usage when the tightest level has none to pair with it."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/kubepods/pod/container'),
@@ -740,11 +723,7 @@ def test_read_cpu_set_size(
 
 
 def test_read_cpu_set_size_unparsable_entry(fake_cgroup: Callable[..., Path]) -> None:
-    """Names the level when one entry of the list does not parse, rather than counting the rest.
-
-    Every entry has to parse: counting `0-1` out of `0-1,nonsense` would report a set narrower than the one
-    the kernel enforces, which is a restriction a consumer would then size a pool from.
-    """
+    """Names the level when one entry of the list does not parse, rather than counting the rest."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -803,16 +782,14 @@ def test_read_cpu_set_size_file_disappears(fake_cgroup: Callable[..., Path]) -> 
 
 
 def test_read_cpu_set_size_unreadable_file(fake_cgroup: Callable[..., Path]) -> None:
-    """Names the level whose set cannot be read, instead of reporting no restriction.
-
-    The file is located and read in two steps, and a cgroup can be removed between them. A directory in its
-    place reproduces that failure without a race.
-    """
+    """Names the level whose set cannot be read, instead of reporting no restriction."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
         files={'cpuset.cpus.effective': '0-1\n'},
     )
+    # A directory in place of the file fails the read the way a cgroup removed between locating and reading
+    # it does, and without the race.
     (root / 'cpuset.cpus.effective').unlink()
     (root / 'cpuset.cpus.effective').mkdir()
 
@@ -820,12 +797,7 @@ def test_read_cpu_set_size_unreadable_file(fake_cgroup: Callable[..., Path]) -> 
 
 
 def test_locate_cpu_usage_skips_a_controller_less_unified_hierarchy(fake_cgroup: Callable[..., Path]) -> None:
-    """Counts the time where the limits are, not in a cgroup2 that carries no controllers.
-
-    `cpu.stat` exists in every cgroup v2 group whether or not the controller is enabled, so a hybrid machine
-    offers a counter for a cgroup this process only nominally belongs to - here the whole docker service
-    rather than one container.
-    """
+    """Counts the time where the limits are, not in a cgroup2 whose `cpu.stat` exists without the controller."""
     root = fake_cgroup(
         mountinfo=HYBRID_MOUNTINFO,
         self_cgroup=HYBRID_SELF_CGROUP,
@@ -888,12 +860,7 @@ def test_locate_cpu_usage_keeps_a_unified_hierarchy_that_carries_the_cpu_control
 
 
 def test_cpu_usage_dir_rejects_a_group_of_the_same_name(fake_cgroup: Callable[..., Path]) -> None:
-    """Refuses a counter that only shares a name with the level the quota binds at.
-
-    The two hierarchies name different cgroups for this process here, which `cgclassify` and `cgrules.conf`
-    produce. `/limited` exists under the accounting hierarchy too, and belongs to somebody else - reading it
-    would report their CPU time as this process's, and a rate of a busy stranger reads as saturation.
-    """
+    """Refuses a counter that only shares a name with the level the quota binds at."""
     root = fake_cgroup(
         mountinfo=V1_CPU_SPLIT_MOUNTINFO,
         self_cgroup='3:cpu:/limited\n4:cpuacct:/ours\n',
@@ -915,11 +882,7 @@ def test_cpu_usage_dir_rejects_a_group_of_the_same_name(fake_cgroup: Callable[..
 
 
 def test_read_memory_unreadable_limit(fake_cgroup: Callable[..., Path]) -> None:
-    """Names the level whose limit cannot be read, instead of answering with a looser ancestor.
-
-    An emulated cgroupfs, a denied delegation or a truncated file all produce this. The ancestor's ten
-    gigabytes would be handed to a consumer whose real ceiling is half a gigabyte.
-    """
+    """Names the level whose limit cannot be read, instead of answering with a looser ancestor."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -942,11 +905,7 @@ def test_read_memory_unreadable_limit(fake_cgroup: Callable[..., Path]) -> None:
 
 
 def test_read_memory_looser_level_without_usage(fake_cgroup: Callable[..., Path]) -> None:
-    """Drops the working set for a missing usage on a level that is not the tightest one.
-
-    That level is looser, so it holds more memory before its own limit - but it also counts what its other
-    children use, and it can still be the closest of all of them to its ceiling.
-    """
+    """Drops the working set for a missing usage on a looser level, which can still be the closest to its limit."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -969,11 +928,7 @@ def test_read_memory_looser_level_without_usage(fake_cgroup: Callable[..., Path]
 
 
 def test_read_memory_limit_file_cannot_be_opened(fake_cgroup: Callable[..., Path]) -> None:
-    """Names a level whose limit file is there but cannot be read at all, as for one that holds nonsense.
-
-    A denied delegation and a racing runtime produce this rather than a bad number. A directory in place of
-    the file reproduces it without needing either.
-    """
+    """Names a level whose limit file is there but cannot be read at all, as for one that holds nonsense."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -984,6 +939,7 @@ def test_read_memory_limit_file_cannot_be_opened(fake_cgroup: Callable[..., Path
             'pod/container/memory.current': '100\n',
         },
     )
+    # A directory in place of the file, which a denied delegation and a racing runtime both amount to.
     (root / 'pod' / 'container' / 'memory.max').mkdir()
 
     assert cgroup.read_memory().unreadable_directory == root / 'pod' / 'container'
@@ -1026,11 +982,7 @@ def test_read_cpu_quota_unreadable_level(fake_cgroup: Callable[..., Path]) -> No
 
 
 def test_read_cpu_set_size_inherited_under_v1(fake_cgroup: Callable[..., Path]) -> None:
-    """Reads the set a cgroup v1 level inherits, which its own file spells as empty.
-
-    `cpuset.cpus` holds what was configured on that level, and an empty file means "whatever the parent
-    allows". Reading only that would lose the restriction entirely.
-    """
+    """Reads the set a cgroup v1 level inherits, which its own file spells as empty."""
     root = fake_cgroup(
         mountinfo=V1_CPUSET_MOUNTINFO,
         self_cgroup='4:cpuset:/child\n',
@@ -1049,11 +1001,7 @@ def test_read_cpu_set_size_inherited_under_v1(fake_cgroup: Callable[..., Path]) 
 
 
 def test_read_cpu_set_size_without_a_counter_of_its_own(fake_cgroup: Callable[..., Path]) -> None:
-    """Reports no counter when the accounting hierarchy does not carry the level the set applies to.
-
-    `cgexec -g cpuset:limited` moves the process in the cpuset hierarchy only, so its cgroup in the accounting
-    hierarchy is the root - whose counter is the CPU time of the whole machine.
-    """
+    """Reports no counter when the accounting hierarchy does not carry the level the set applies to."""
     fake_cgroup(
         mountinfo=V1_CPUSET_SPLIT_MOUNTINFO,
         self_cgroup='4:cpuset:/limited\n5:cpuacct:/\n',
@@ -1068,11 +1016,7 @@ def test_read_cpu_set_size_without_a_counter_of_its_own(fake_cgroup: Callable[..
 
 
 def test_read_cpu_set_size_from_an_ancestor(fake_cgroup: Callable[..., Path]) -> None:
-    """Reads the set of an ancestor when the own cgroup carries none, because it applies there too.
-
-    A cgroup gets `cpuset.cpus.effective` only once its parent enables the controller for it, and a set on the
-    level above restricts everything below it either way.
-    """
+    """Reads the set of an ancestor when the own cgroup carries none, because it applies there too."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -1265,11 +1209,7 @@ def test_read_cpu_usage_at_a_named_level(fake_cgroup: Callable[..., Path]) -> No
 
 
 def test_read_cpu_set_size_reads_the_closest_level(fake_cgroup: Callable[..., Path]) -> None:
-    """Reads the set of the own cgroup, not of an ancestor that allows more.
-
-    A set restricts the group of this process, so its time is the time of that group, counted at the closest
-    level that counts any.
-    """
+    """Reads the set of the own cgroup, not of an ancestor that allows more."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -1305,10 +1245,7 @@ def test_read_cpu_usage_reads_the_closest_level(fake_cgroup: Callable[..., Path]
 
 
 def test_read_memory_limit_of_zero(fake_cgroup: Callable[..., Path]) -> None:
-    """Takes a limit of zero as the tightest limit there is, not as an absent one.
-
-    A cgroup can be given no memory at all. Reading that as "unrestricted" would hand a consumer the machine.
-    """
+    """Takes a limit of zero as the tightest limit there is, not as an absent one."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -1331,11 +1268,7 @@ def test_read_memory_limit_of_zero(fake_cgroup: Callable[..., Path]) -> None:
 
 
 def test_read_memory_usage_below_the_cache(fake_cgroup: Callable[..., Path]) -> None:
-    """Floors the charged memory at zero when the reclaimable cache reads larger than the usage.
-
-    The two are separate readings and can disagree, and a negative amount of charged memory is meaningless.
-    The floor sits in the level reading, because that is where the claim "memory charged" is made.
-    """
+    """Floors the charged memory at zero when the reclaimable cache reads larger than the usage."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -1386,11 +1319,7 @@ def test_read_hierarchies_first_v1_mount_wins(fake_cgroup: Callable[..., Path]) 
 
 
 def test_read_hierarchies_skips_a_foreign_v1_mount(fake_cgroup: Callable[..., Path]) -> None:
-    """Skips a cgroup v1 mount of another subtree, as the unified hierarchy does.
-
-    Nothing stops a controller from being mounted twice, and the first line of the mount table is not
-    necessarily the mount this process lives in.
-    """
+    """Skips a cgroup v1 mount of another subtree, as the unified hierarchy does."""
     mountinfo = (
         '30 25 0:26 /other {root}/foreign rw,nosuid shared:14 - cgroup cgroup rw,memory\n'
         '31 25 0:27 / {root}/ours rw,nosuid shared:15 - cgroup cgroup rw,memory'
@@ -1420,10 +1349,7 @@ def test_read_hierarchies_skips_a_foreign_v1_mount(fake_cgroup: Callable[..., Pa
 
 
 def test_read_memory_v1_uses_the_hierarchical_key(fake_cgroup: Callable[..., Path]) -> None:
-    """Reads `total_inactive_file` under cgroup v1, which counts the children as the limit does.
-
-    A real v1 kernel reports both keys, and the per-cgroup one alone would understate the cache.
-    """
+    """Reads `total_inactive_file` under cgroup v1, which counts the children as the limit does."""
     root = fake_cgroup(
         mountinfo=V1_MOUNTINFO,
         self_cgroup=V1_SELF_CGROUP.format(path='/'),
@@ -1443,11 +1369,7 @@ def test_read_memory_v1_uses_the_hierarchical_key(fake_cgroup: Callable[..., Pat
 
 
 def test_read_cpu_quota_across_split_hierarchies(fake_cgroup: Callable[..., Path]) -> None:
-    """Finds the counter of the level the quota binds at, even in another hierarchy.
-
-    Under cgroup v1 `cpu` and `cpuacct` are separate controllers, and a system can mount them apart. The level
-    is then the same cgroup under two mount points.
-    """
+    """Finds the counter of the level the quota binds at, even in another hierarchy."""
     root = fake_cgroup(
         mountinfo=V1_CPU_SPLIT_MOUNTINFO,
         self_cgroup='3:cpu:/slice/own\n4:cpuacct:/slice/own\n',
@@ -1500,11 +1422,7 @@ def test_read_cpu_quota_without_accounting(fake_cgroup: Callable[..., Path]) -> 
     ],
 )
 def test_read_cpu_quota_v2_degenerate(fake_cgroup: Callable[..., Path], cpu_max: str) -> None:
-    """Names the level for a cgroup v2 quota that describes no bandwidth.
-
-    This interface spells "no quota" as `max`, so anything here that is not bandwidth is a file this module
-    cannot use - not an absent limit. cgroup v1, which has no such word, reads a negative quota as unlimited.
-    """
+    """Names the level for a cgroup v2 quota that is not bandwidth, since this interface spells absence as `max`."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -1515,12 +1433,7 @@ def test_read_cpu_quota_v2_degenerate(fake_cgroup: Callable[..., Path], cpu_max:
 
 
 def test_read_cpu_quota_appearing_after_discovery(fake_cgroup: Callable[..., Path]) -> None:
-    """Sees a quota written to a level that carried none when the chain was discovered.
-
-    `systemctl set-property` creates the control files of a level at runtime. Discovery happens once per
-    process, so a chain cut down to the levels that carried the controller at startup would hide such a limit
-    for as long as the process lives.
-    """
+    """Sees a quota written to a level that carried none when the chain was discovered."""
     # A systemd scope carries no `cpu.max` until it is given a quota, while the slice above it has one.
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,

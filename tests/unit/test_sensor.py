@@ -161,11 +161,7 @@ def test_get_memory_budget_fake_limit_without_usage(fake_cgroup: Callable[..., P
 
 @pytest.mark.usefixtures('_no_cgroup')
 def test_get_memory_budget_no_mechanism() -> None:
-    """Reports nothing when no mechanism carries a limit, and says that is what happened.
-
-    "Nothing limits you here" and "nothing here can tell" are different answers, and only one of them is a
-    fact about the machine.
-    """
+    """Reports nothing when no mechanism carries a limit, and says that is what happened."""
     assert cgroups_sensor.get_memory_budget() is None
     assert notice_codes() == ('memory-metrics-unavailable', 'cpu-metrics-unavailable')
 
@@ -632,11 +628,7 @@ def test_describe_hybrid_interfaces(fake_cgroup: Callable[..., Path]) -> None:
 
 
 def test_describe_names_the_level_the_memory_limit_came_from(fake_cgroup: Callable[..., Path]) -> None:
-    """Names the level holding the limit, which the chain of searched levels does not say.
-
-    Every level is kept in `levels`, carrying the metric or not, so `levels[0]` is the cgroup of this process
-    rather than the source of the limit.
-    """
+    """Names the level holding the limit, which the chain of searched levels does not say."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -663,11 +655,7 @@ def test_describe_names_the_level_the_memory_limit_came_from(fake_cgroup: Callab
 
 
 def test_describe_names_the_level_the_cpu_limit_came_from(fake_cgroup: Callable[..., Path]) -> None:
-    """Names the level the quota binds on, which is also where a rate has to be measured.
-
-    The quota sits on the slice above this process, so the counter of the own cgroup would answer a different
-    question - see `test_get_cpu_used_ratio_measures_where_the_quota_binds`.
-    """
+    """Names the level the quota binds on, which is also where a rate has to be measured."""
     root = loaded_slice(fake_cgroup, own_usec=0, slice_usec=0)
 
     description = cgroups_sensor.describe()
@@ -678,11 +666,7 @@ def test_describe_names_the_level_the_cpu_limit_came_from(fake_cgroup: Callable[
 
 
 def test_describe_names_both_cpu_levels_across_split_hierarchies(fake_cgroup: Callable[..., Path]) -> None:
-    """Tells the level holding the limit from the level counting its time, which cgroup v1 can keep apart.
-
-    `cpu` and `cpuacct` are separate controllers and can be mounted separately. The quota is then readable in
-    one hierarchy and the time it applies to only in the other.
-    """
+    """Tells the level holding the limit from the level counting its time, which cgroup v1 can keep apart."""
     root = fake_cgroup(
         mountinfo=V1_CPU_SPLIT_MOUNTINFO,
         self_cgroup='3:cpu:/slice\n4:cpuacct:/slice\n',
@@ -708,12 +692,7 @@ def test_describe_names_both_cpu_levels_across_split_hierarchies(fake_cgroup: Ca
     ],
 )
 def test_enum_members_print_as_their_strings(member: str, expected: str) -> None:
-    """Prints as the string it carries, which is what a log line shows and what a payload carries.
-
-    A `str` enum does not do this on its own: a member prints as `NoticeCode.MEMORY_LIMIT_COVERS_MACHINE`, and
-    an f-string of it differs between the supported Python versions. The JSON form is what the end-to-end
-    probe reports its readings through, and it holds only as long as these stay `str` members.
-    """
+    """Prints as the string it carries, which is what a log line shows and what a payload carries."""
     assert str(member) == expected
     assert f'{member}' == expected
     assert member == expected
@@ -747,12 +726,7 @@ def test_covers_machine_notice_spells_the_cores(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_every_notice_code_names_its_metric() -> None:
-    """Spells every code as `<metric>-...`, which is the only thing telling a memory notice from a CPU one.
-
-    Nothing in the package enforces that, and both test suites sort notices by it. A code matching no metric
-    would silently drop out of every such filter, and a test asserting "no memory notices" would then pass
-    while one was raised.
-    """
+    """Spells every code as `<metric>-...`, which is the only thing telling a memory notice from a CPU one."""
     metrics = {
         str(code): [metric for metric, prefixes in NOTICE_PREFIXES.items() if str(code).startswith(prefixes)]
         for code in cgroups_sensor.NoticeCode
@@ -837,10 +811,7 @@ def test_machine_memory_bytes_missing_file(tmp_path: Path, monkeypatch: pytest.M
     ],
 )
 def test_machine_cpu_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, online: str, expected: int) -> None:
-    """Counts the cores the kernel lists as online, whatever the process is allowed to run on.
-
-    Under musl `sysconf` reports the affinity of the process, so a cpuset would look like the whole machine.
-    """
+    """Counts the cores the kernel lists as online, whatever the process is allowed to run on."""
     listing = tmp_path / 'online'
     listing.write_text(online)
     monkeypatch.setattr(_sensor, '_SYS_CPU_ONLINE', listing)
@@ -909,12 +880,7 @@ def test_get_cpu_used_ratio_measures_where_the_quota_binds(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Measures the level the quota throttles, not the idle process inside it.
-
-    The quota of half a core sits on the slice, and the slice consumes half a core-second per second. The
-    process itself barely runs, and reading only its own counter would report an idle machine while the kernel
-    is throttling.
-    """
+    """Measures the level the quota throttles, not the idle process inside it."""
     root = loaded_slice(fake_cgroup, own_usec=7100, slice_usec=0)
 
     def sleep(_seconds: float) -> None:
@@ -1014,11 +980,7 @@ def test_no_rate_without_a_counter_for_the_limit(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reports no rate at all when the level the limit applies to counts no CPU time.
-
-    Measuring the group of this process instead would divide the time of one scope by the limit of another,
-    which is the mistake the notice exists to prevent.
-    """
+    """Reports no rate at all when the level the limit applies to counts no CPU time."""
     fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -1040,11 +1002,7 @@ def test_cpu_load_when_the_limit_moves_to_another_level(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reports nothing for the sample across a limit that moved to another level.
-
-    Arbitrary time passes between two calls of the sampler, and a quota can appear on an ancestor meanwhile.
-    The counter then belongs to another scope than the previous one, and their difference means nothing.
-    """
+    """Reports nothing for the sample across a limit that moved to another level."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -1090,17 +1048,14 @@ def test_cpu_load_swaps_the_previous_reading_under_its_lock(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Replaces the kept reading inside the lock, which is what the promise of thread safety rests on.
-
-    A race cannot be reproduced on demand, so what is pinned here is the discipline that prevents it. Reading
-    the previous value and writing the new one is one step, and two threads must not interleave inside it.
-    """
+    """Replaces the kept reading inside the lock, which is what the promise of thread safety rests on."""
     fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
         files={'cpu.max': '200000 100000\n', 'cpu.stat': 'usage_usec 0\n'},
     )
     load = cgroups_sensor.CpuLoad()
+    # A race cannot be reproduced on demand, so what is counted here is the discipline that prevents it.
     counting = _CountingLock(load._lock)
     monkeypatch.setattr(load, '_lock', counting)
 
@@ -1111,11 +1066,7 @@ def test_cpu_load_swaps_the_previous_reading_under_its_lock(
 
 
 def test_cpu_load_sampled_from_several_threads(fake_cgroup: Callable[..., Path]) -> None:
-    """Answers every caller without deadlocking or raising when several threads share one sampler.
-
-    Sharing one is not what the class recommends - each caller measures the others' windows - but it must not
-    break, because a caller cannot always tell that it happened.
-    """
+    """Answers every caller without deadlocking or raising when several threads share one sampler."""
     fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -1143,11 +1094,7 @@ def test_cpu_load_when_the_limit_moves_without_changing_value(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reports nothing for a limit that moved level while keeping its value.
-
-    kubelet writes onto the pod the number the container carried. The limits then compare equal while the
-    counters belong to two scopes, and only the level says so.
-    """
+    """Reports nothing for a limit that moved level while keeping its value, as kubelet's pod and container do."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/pod/container'),
@@ -1176,11 +1123,7 @@ def test_cpu_load_when_the_limit_changes_in_place(
     fake_cgroup: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reports nothing for the sample across a limit that changed value.
-
-    The same consumption divided by two different numbers of cores is not a rate of anything. A container
-    resized between two calls is the ordinary way this happens.
-    """
+    """Reports nothing for the sample across a limit that changed value."""
     root = fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -1221,11 +1164,7 @@ def test_get_cpu_used_ratio_returns_at_once_without_a_limit(
 
 
 def test_cpu_load_two_samples_too_close(fake_cgroup: Callable[..., Path], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reports nothing for a window shorter than the counter's own resolution.
-
-    Two callers sharing one sampler take each other's windows, and the second of them would otherwise read a
-    saturated cgroup as idle: the counter has not moved yet.
-    """
+    """Reports nothing for a window shorter than the counter's own resolution."""
     fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),
@@ -1240,12 +1179,7 @@ def test_cpu_load_two_samples_too_close(fake_cgroup: Callable[..., Path], monkey
 
 
 def test_nothing_raises_on_unreadable_files(fake_cgroup: Callable[..., Path]) -> None:
-    """Reports nothing rather than raising when every control file holds something unreadable, and says so.
-
-    The contract of the whole module is that a reading fails into `None`. An emulated cgroupfs, a truncated
-    file or a racing runtime can produce any of these, and a limit that cannot be read is not a limit that is
-    not there: what such a level enforces is unknown, so nothing is reported and a notice names it.
-    """
+    """Reports nothing rather than raising when every control file holds something unreadable, and says so."""
     fake_cgroup(
         mountinfo=V2_MOUNTINFO,
         self_cgroup=V2_SELF_CGROUP.format(path='/'),

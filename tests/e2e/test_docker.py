@@ -18,10 +18,7 @@ pytestmark = pytest.mark.usefixtures('_docker')
 
 
 def test_no_limits() -> None:
-    """Reports no restriction for a container that sets none.
-
-    This is where the spellings differ: cgroup v2 writes `max`, cgroup v1 a sentinel near 2**63.
-    """
+    """Reports no restriction for a container that sets none, spelled `max` under cgroup v2 and a sentinel under v1."""
     reading = probe_in_container()
 
     check_invariants(reading)
@@ -92,11 +89,7 @@ def test_host_cgroup_namespace() -> None:
 
 
 def test_tighter_limit_inside_the_container() -> None:
-    """Takes the tightest limit when two levels carry different ones.
-
-    The container gets one limit and the probe puts itself under a tighter one. That is the shape kubelet
-    produces.
-    """
+    """Takes the tightest limit when two levels carry different ones, which is the shape kubelet produces."""
     # The kernel forbids a cgroup that both holds processes and delegates controllers, so the shell vacates
     # the root first, enables the controller, then moves in. `0` is how a process names itself to cgroupfs.
     setup = f"""
@@ -128,11 +121,7 @@ def test_tighter_limit_inside_the_container() -> None:
 
 @pytest.mark.parametrize('image', DISTRO_IMAGES)
 def test_distributions(image: str) -> None:
-    """Reads the same limits whatever distribution the process runs on.
-
-    The sensor only reads `/proc` and `/sys`, so the C library should not matter. It once did: under musl
-    `sysconf` reported the affinity instead of the machine.
-    """
+    """Reads the same limits on every distribution, including musl, whose `sysconf` once reported the affinity."""
     pull_image(image)
 
     reading = probe_in_container(
@@ -167,10 +156,7 @@ def test_python_versions(python_version: str) -> None:
 
 @pytest.mark.systemd_slices
 def test_limit_on_a_parent_cgroup(parent_slice: str) -> None:
-    """Reads a limit set outside the container, on the slice the container was put into.
-
-    The container carries no limit of its own here, so the sensor has to walk up to find one.
-    """
+    """Reads a limit set outside the container, on the slice it was put into, when it carries none of its own."""
     reading = probe_in_container('--cgroupns=host', f'--cgroup-parent={parent_slice}')
 
     check_invariants(reading)

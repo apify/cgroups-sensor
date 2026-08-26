@@ -35,10 +35,7 @@ def test_unrestricted() -> None:
 
 @pytest.mark.parametrize('python_version', PYTHON_VERSIONS)
 def test_python_versions(python_version: str) -> None:
-    """Reads the same machine facts on every supported interpreter.
-
-    The version is a real axis: `os.cpu_count()` started honoring `PYTHON_CPU_COUNT` in 3.13.
-    """
+    """Reads the same machine facts on every interpreter, including 3.13 where `os.cpu_count()` gained an override."""
     reading = probe_here(python_version=python_version)
 
     check_invariants(reading)
@@ -71,10 +68,7 @@ def test_cpu_quota(systemd_scope: Callable[..., list[str]]) -> None:
 
 @pytest.mark.unified
 def test_memory_limit_above_the_machine(systemd_scope: Callable[..., list[str]]) -> None:
-    """Drops a memory limit larger than the machine, and says so.
-
-    Nothing rejects such a limit. A container given more memory than the node it landed on gets one.
-    """
+    """Drops a memory limit larger than the machine, and says so."""
     limit = machine_memory_bytes() + 1024**3
     reading = probe_here(systemd_scope(f'MemoryMax={limit}'))
 
@@ -86,10 +80,7 @@ def test_memory_limit_above_the_machine(systemd_scope: Callable[..., list[str]])
 
 @pytest.mark.unified
 def test_cpu_quota_above_the_machine(systemd_scope: Callable[..., list[str]]) -> None:
-    """Drops a CPU quota larger than the machine, and says so.
-
-    systemd writes the quota as asked. A Kubernetes limit above node capacity does the same.
-    """
+    """Drops a CPU quota larger than the machine, and says so."""
     quota_cores = machine_cpu_count() + 1
     reading = probe_here(systemd_scope(f'CPUQuota={quota_cores * 100}%'))
 
@@ -100,15 +91,13 @@ def test_cpu_quota_above_the_machine(systemd_scope: Callable[..., list[str]]) ->
 
 
 def test_every_axis_at_once(systemd_scope: Callable[..., list[str]]) -> None:
-    """Reads all three limits at once. The tighter of the two CPU axes wins.
-
-    A system scope, not a user one: under cgroup v1 a user scope gets no resource cgroup. `AllowedCPUs=`
-    needs a delegated cpuset, which only the unified hierarchy has.
-    """
+    """Reads all three limits at once. The tighter of the two CPU axes wins."""
     properties = [f'MemoryMax={MEMORY_LIMIT}', f'CPUQuota={int(QUOTA_CORES * 100)}%']
     if is_unified():
+        # `AllowedCPUs=` needs a delegated cpuset, which only the unified hierarchy has.
         properties.append('AllowedCPUs=0')
 
+    # A system scope, not a user one: under cgroup v1 a user scope gets no resource cgroup.
     reading = probe_here(systemd_scope(*properties, system=True))
 
     check_invariants(reading)
@@ -120,11 +109,7 @@ def test_every_axis_at_once(systemd_scope: Callable[..., list[str]]) -> None:
 
 
 def test_limit_on_an_ancestor(systemd_scope: Callable[..., list[str]]) -> None:
-    """Reads a limit from an ancestor when the own cgroup carries no limit of its own.
-
-    The probe makes a child cgroup and moves into it, so the sensor has to walk up to find the limit. A system
-    scope, because under cgroup v1 a user scope gets no resource cgroup at all.
-    """
+    """Reads a limit from an ancestor when the own cgroup carries no limit of its own."""
     properties = [f'MemoryMax={MEMORY_LIMIT}']
     if is_unified():
         # Nothing can be created below a scope that is not delegated. cgroup v1 has no such rule.
@@ -149,6 +134,7 @@ def test_limit_on_an_ancestor(systemd_scope: Callable[..., list[str]]) -> None:
 
     exec "$@"
     """
+    # A system scope, because under cgroup v1 a user scope gets no resource cgroup at all.
     reading = probe_here([*systemd_scope(*properties, system=True), 'bash', '-c', move_into_leaf, '--'])
 
     check_invariants(reading)
@@ -163,13 +149,7 @@ def test_limit_on_an_ancestor(systemd_scope: Callable[..., list[str]]) -> None:
 
 
 def test_expected_interface() -> None:
-    """Check that this run reached the cgroup interface it was started for.
-
-    A guest booted for cgroup v1 that comes up on v2 would run a smaller set and still report success.
-    `E2E_INTERFACE` names what to expect. Without it, this machine is asked what it is.
-
-    Only the limits have to come from that interface, for the reason `Reading.limit_interfaces` gives.
-    """
+    """Fails a run that reached another cgroup interface than the one it was started for."""
     expected = os.environ.get('E2E_INTERFACE') or ('cgroup-v2' if is_unified() else 'cgroup-v1')
 
     reading = probe_here()

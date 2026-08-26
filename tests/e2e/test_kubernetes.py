@@ -165,10 +165,7 @@ def probe_in_pod(resources: dict[str, Any]) -> Reading:
 
 
 def test_pod_with_limits() -> None:
-    """Reads container limits from inside the pod's own cgroup namespace.
-
-    kubelet nests a pod several levels under kubepods. From inside, the container sees itself at the root.
-    """
+    """Reads container limits from inside the pod's cgroup namespace, where the container sees itself at the root."""
     reading = probe_in_pod(
         {
             # Small on purpose: kubernetes copies limits into requests when none are given, and a pod
