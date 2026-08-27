@@ -1,0 +1,129 @@
+name: E2E
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch. A superseded push is cancelled, except on main, where every commit is checked. These
+# lanes boot virtual machines, so a queue of stale runs is expensive.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # The interpreter is a real axis only for what the probe runs on: the container tests below bring their own
+  # interpreters with uv, and running them once per version would repeat identical work five times.
+  machine:
+    name: machine (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    env:
+      # The suite itself, and with it the probe on this machine, runs on the version of the matrix.
+      UV_PYTHON: ${{ matrix.python-version }}
+      E2E_INTERFACE: cgroup-v2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv package manager
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Install dependencies
+        run: uv run poe install-dev
+
+      # This runner is a plain cgroup v2 machine with systemd and passwordless sudo, so every machine test
+      # holds here and none is excluded.
+      - name: Run the machine tests
+        run: uv run pytest tests/e2e/test_machine.py
+
+  containers:
+    name: containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      E2E_INTERFACE: cgroup-v2
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv package manager
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Install dependencies
+        run: uv run poe install-dev
+
+      - name: Run the container tests
+        run: uv run pytest tests/e2e/test_docker.py
+
+  kubernetes:
+    name: kubernetes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv package manager
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Install kind
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: cgroups-sensor-e2e
+
+      - name: Install dependencies
+        run: uv run poe install-dev
+
+      - name: Run the kubernetes tests
+        run: uv run pytest tests/e2e/test_kubernetes.py
+
+  guest:
+    name: guest (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The Ubuntu profiles are the only way to reach cgroup v1. The Fedora one runs the same suite on a
+        # second distribution, with a much newer systemd.
+        profile: [ubuntu-v1-hybrid, ubuntu-v1-legacy, fedora-v2]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up uv package manager
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 cloud-image-utils
+
+      - name: Let this user reach /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache the guest image
+        uses: actions/cache@v4
+        with:
+          # The images only, not the keys and overlays a run creates next to them.
+          path: ~/.cache/cgroups-sensor-guest
+          key: guest-images-${{ hashFiles('tests/e2e/scripts/guest.sh') }}
+
+      - name: Run the e2e suite inside the guest
+        env:
+          GUEST_PROFILE: ${{ matrix.profile }}
+        run: ./tests/e2e/scripts/guest.sh
