@@ -378,7 +378,9 @@ def delegated_controllers() -> frozenset[str]:
     """The controllers the systemd user manager of this user may hand out.
 
     Everything a rootless engine starts lands below `user@<uid>.service`, and can be limited only by a
-    controller delegated to that unit. systemd 255 delegates `cpu`, `memory` and `pids`, and not `cpuset`.
+    controller delegated to that unit - which is what its `cgroup.controllers` lists, and not its
+    `cgroup.subtree_control`, which is only what the manager has enabled for children so far. systemd 255
+    delegates `cpu`, `memory` and `pids`, and not `cpuset`.
 
     The unit is named from the uid, not read out of `/proc/self/cgroup`: the process asking is not under the
     manager itself. Empty where this user has no manager running.

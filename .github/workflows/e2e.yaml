@@ -108,6 +108,10 @@ jobs:
       - name: Install dependencies
         run: uv run poe install-dev
 
+      - name: Show what podman will do
+        run: |
+          podman info --format 'cgroups: {{.Host.CgroupsVersion}} via {{.Host.CgroupManager}}'
+
       # A job is not a login, so this user has no logind session and rootless podman drives cgroups itself
       # rather than through systemd. Slices mean nothing to it then; the fedora guest covers that shape.
       - name: Run the podman tests

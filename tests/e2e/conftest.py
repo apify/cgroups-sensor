@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from itertools import count
 from typing import TYPE_CHECKING
 
 import pytest
@@ -37,13 +38,19 @@ def _rootful_podman() -> None:
     pull_image(IMAGE, ROOTFUL_PODMAN)
 
 
+_slice_numbers = count()
+"""Numbers the slices of one run apart. Two of them carry different properties under the same name otherwise,
+and a runtime drop-in outliving its unit would leave the second slice carrying both."""
+
+
 def _limited_slice(*properties: str, system: bool) -> Iterator[str]:
     """Create a slice carrying the given resource properties, and remove it afterwards.
 
     A slice exists only while a unit lives in it, so a sleeping holder keeps it alive.
     """
-    name = f'cgroups-sensor-e2e-{os.getpid()}.slice'
-    holder = f'cgroups-sensor-e2e-holder-{os.getpid()}'
+    suffix = f'{os.getpid()}-{next(_slice_numbers)}'
+    name = f'cgroups-sensor-e2e-{suffix}.slice'
+    holder = f'cgroups-sensor-e2e-holder-{suffix}'
 
     # A system slice needs root. A user one is where a rootless engine puts its containers.
     run_unit = ['sudo', 'systemd-run'] if system else ['systemd-run', '--user']
