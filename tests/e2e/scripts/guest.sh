@@ -30,9 +30,10 @@ case $PROFILE in
     PACKAGES=docker.io
     PREPARE=''
     # What cgroup v1 costs, and it is the point of this profile: user scopes get no resource controllers, and
-    # docker drives cgroups through cgroupfs, so a slice name means nothing to it. kind is not installed.
+    # docker drives cgroups through cgroupfs, so a slice name means nothing to it. A rootless container has no
+    # delegation to fall back on here, so podman is not installed either, nor is kind.
     # Everything else - docker, sudo, systemd, two cores - this guest has, and a test needing it has to pass.
-    EXCLUDE='not unified and not systemd_slices and not kubernetes'
+    EXCLUDE='not unified and not systemd_slices and not kubernetes and not podman'
     INTERFACE=cgroup-v1
     CGROUP_ARGS='systemd.unified_cgroup_hierarchy=0'
     [ "$PROFILE" = ubuntu-v1-legacy ] && CGROUP_ARGS="$CGROUP_ARGS systemd.legacy_systemd_cgroup_controller=1"
@@ -45,7 +46,9 @@ case $PROFILE in
     IMAGE_URL=${GUEST_IMAGE_URL:-$FEDORA/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2}
     KERNEL_URL=''
     INITRD_URL=''
-    PACKAGES=moby-engine
+    # podman too: the second machine for the rootless lane, and on a far newer systemd than a hosted runner -
+    # which is what decides how much a user manager may delegate.
+    PACKAGES='moby-engine podman'
     # A full cgroup v2 machine, so only the cluster tests are out: kind is not installed here.
     EXCLUDE='not kubernetes'
     INTERFACE=cgroup-v2
@@ -109,8 +112,13 @@ write_seed() {
 
   cat > "$WORK/user-data" <<EOF
 #cloud-config
+# Before the user, so the engine package adopts it and the first login already has it. Granting it afterwards
+# would leave every session this script opens without it.
+groups:
+  - docker
 users:
   - name: $GUEST_USER
+    groups: docker
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
     lock_passwd: true
@@ -118,7 +126,7 @@ users:
       - $(cat "$KEY.pub")
 package_update: false
 packages:
-  - $PACKAGES
+$(for package in $PACKAGES; do echo "  - $package"; done)
 runcmd:
   # The systemd user manager does not start on its own for a user who is only ever reached over ssh.
   - loginctl enable-linger $GUEST_USER
@@ -199,7 +207,6 @@ install_suite() {
 
   copy_in "$(command -v uv)" uv
   in_guest 'sudo install -m 0755 uv /usr/local/bin/uv'
-  in_guest "getent group docker >/dev/null && sudo usermod -aG docker $GUEST_USER || true"
 }
 
 # Run the suite inside and hand back its exit code.
@@ -215,12 +222,9 @@ run_suite() {
   local status=0
 
   echo 'guest: running the e2e suite inside'
-  # The freshly granted docker group only applies to new logins, so borrow it for this command.
-  if in_guest 'getent group docker >/dev/null'; then
-    in_guest "sg docker -c \"$suite\"" || status=$?
-  else
-    in_guest "$suite" || status=$?
-  fi
+  # With the groups of the login, not `sg docker`: that makes docker the primary group, and `newuidmap` then
+  # refuses to map a user whose group is not their own - taking rootless podman down with it.
+  in_guest "$suite" || status=$?
 
   return "$status"
 }

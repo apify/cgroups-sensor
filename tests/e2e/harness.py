@@ -21,9 +21,36 @@ PROBE = Path(__file__).parent / 'probe.py'
 IMAGE = 'python:3.13-alpine'
 """The image the container tests use. uv brings the interpreter, so this one only has to be small."""
 
+DOCKER_HUB = 'docker.io'
+"""The registry the images above live in, for the engines that do not assume one."""
+
+
+@dataclass(frozen=True)
+class Engine:
+    """A container engine, and how a test reaches it."""
+
+    name: str
+    """What this engine's uv cache is kept under. A rootful engine writes into it as real root, which a
+    rootless one cannot then use."""
+
+    command: tuple[str, ...]
+    """How the engine is started, `sudo` included where the containers have to be root's."""
+
+    registry: str | None = None
+    """The registry to name in front of an image, or `None` where the engine assumes one. Podman refuses a
+    bare name that several of them could answer."""
+
+
+DOCKER = Engine(name='docker', command=('docker',))
+PODMAN = Engine(name='podman', command=('podman',), registry=DOCKER_HUB)
+ROOTFUL_PODMAN = Engine(name='podman-root', command=('sudo', 'podman'), registry=DOCKER_HUB)
+
+DEBIAN_IMAGE = 'python:3.13-slim'
+"""For the tests whose setup needs a tool the busybox of an alpine image does not carry, such as `unshare`."""
+
 DISTRO_IMAGES = (
-    'python:3.13-alpine',
-    'python:3.13-slim',
+    IMAGE,
+    DEBIAN_IMAGE,
     'fedora:43',
     'rockylinux:9',
 )
@@ -132,9 +159,12 @@ def parse(output: str) -> Reading:
     return Reading(**payload)
 
 
-def run(command: list[str], *, env: dict[str, str] | None = None) -> Reading:
-    """Run one probe command and parse what it printed."""
-    result = subprocess.run(
+def attempt(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """Run one probe command and hand back how it went, whether or not it worked.
+
+    For the tests that assert on a refusal. Everything else goes through `run`.
+    """
+    return subprocess.run(
         command,
         capture_output=True,
         text=True,
@@ -142,6 +172,11 @@ def run(command: list[str], *, env: dict[str, str] | None = None) -> Reading:
         env=env,
         check=False,
     )
+
+
+def run(command: list[str], *, env: dict[str, str] | None = None) -> Reading:
+    """Run one probe command and parse what it printed."""
+    result = attempt(command, env=env)
 
     if result.returncode == CANNOT_SET_UP:
         pytest.fail(f'the layout this test needs could not be built: {result.stderr.strip()[-300:]}')
@@ -225,53 +260,85 @@ def portable_uv() -> Path:
     return target
 
 
+def container_command(
+    *engine_args: str,
+    engine: Engine = DOCKER,
+    image: str = IMAGE,
+    python_version: str = PYTHON_VERSION,
+    command: list[str] | None = None,
+) -> list[str]:
+    """Spell the `run` command that starts the probe in a fresh container.
+
+    Built rather than run, so that a test can also assert on an engine that refuses to start it.
+    """
+    uv_cache = UV_DOWNLOADS / engine.name / 'cache'
+    interpreters = UV_DOWNLOADS / engine.name / 'python'
+    uv_cache.mkdir(parents=True, exist_ok=True)
+    interpreters.mkdir(parents=True, exist_ok=True)
+
+    return [
+        *engine.command,
+        'run',
+        '--rm',
+        '--volume',
+        f'{SRC_DIR}:/sensor/src:ro',
+        '--volume',
+        f'{PROBE}:/sensor/probe.py:ro',
+        '--volume',
+        f'{portable_uv()}:/uv/uv:ro',
+        '--volume',
+        f'{uv_cache}:/uv/cache',
+        '--volume',
+        f'{interpreters}:/uv/python',
+        '--env',
+        'PYTHONPATH=/sensor/src',
+        '--env',
+        'UV_CACHE_DIR=/uv/cache',
+        '--env',
+        'UV_PYTHON_INSTALL_DIR=/uv/python',
+        *engine_args,
+        qualified(image, engine),
+        *(command or ['sh', '-c', probe_command(python_version)]),
+    ]
+
+
 def probe_in_container(
-    *docker_args: str,
+    *engine_args: str,
+    engine: Engine = DOCKER,
     image: str = IMAGE,
     python_version: str = PYTHON_VERSION,
     command: list[str] | None = None,
 ) -> Reading:
-    """Run the probe in a fresh container. The arguments go to `docker run`."""
-    uv_cache = UV_DOWNLOADS / 'cache'
-    interpreters = UV_DOWNLOADS / 'python'
-    uv_cache.mkdir(parents=True, exist_ok=True)
-    interpreters.mkdir(parents=True, exist_ok=True)
-
+    """Run the probe in a fresh container. The arguments go to the engine's `run`."""
     return run(
-        [
-            'docker',
-            'run',
-            '--rm',
-            '--volume',
-            f'{SRC_DIR}:/sensor/src:ro',
-            '--volume',
-            f'{PROBE}:/sensor/probe.py:ro',
-            '--volume',
-            f'{portable_uv()}:/uv/uv:ro',
-            '--volume',
-            f'{uv_cache}:/uv/cache',
-            '--volume',
-            f'{interpreters}:/uv/python',
-            '--env',
-            'PYTHONPATH=/sensor/src',
-            '--env',
-            'UV_CACHE_DIR=/uv/cache',
-            '--env',
-            'UV_PYTHON_INSTALL_DIR=/uv/python',
-            *docker_args,
-            image,
-            *(command or ['sh', '-c', probe_command(python_version)]),
-        ]
+        container_command(
+            *engine_args,
+            engine=engine,
+            image=image,
+            python_version=python_version,
+            command=command,
+        )
     )
 
 
-def pull_image(image: str) -> None:
+def qualified(image: str, engine: Engine) -> str:
+    """Name the registry of an image, for an engine that does not assume one.
+
+    A name that carries one already is left alone: that is a first component with a dot or a colon in it.
+    """
+    first, slash, _rest = image.partition('/')
+    carries_registry = bool(slash) and ('.' in first or ':' in first or first == 'localhost')
+
+    return image if engine.registry is None or carries_registry else f'{engine.registry}/{image}'
+
+
+def pull_image(image: str, engine: Engine = DOCKER) -> None:
     """Pull one image ahead of the run that needs it, whether or not it arrives.
 
     Pulling separately gets its own generous timeout, which a slow guest network needs. A failure is no
-    verdict: the image may already be here, and where it is not, the `docker run` that follows says so.
+    verdict: the image may already be here, and where it is not, the `run` that follows says so.
     """
-    command_works(['docker', 'pull', '--quiet', image], timeout=TIMEOUT_SECONDS)
+    command_works([*engine.command, 'pull', '--quiet', qualified(image, engine)], timeout=TIMEOUT_SECONDS)
 
 
 def command_works(command: list[str], *, timeout: int = 60) -> bool:
@@ -305,6 +372,24 @@ def is_unified() -> bool:
 
     # Every file in cgroupfs reports zero bytes, so the content has to be read rather than sized.
     return controllers.exists() and bool(controllers.read_text().strip())
+
+
+def delegated_controllers() -> frozenset[str]:
+    """The controllers the systemd user manager of this user may hand out.
+
+    Everything a rootless engine starts lands below `user@<uid>.service`, and can be limited only by a
+    controller delegated to that unit. systemd 255 delegates `cpu`, `memory` and `pids`, and not `cpuset`.
+
+    The unit is named from the uid, not read out of `/proc/self/cgroup`: the process asking is not under the
+    manager itself. Empty where this user has no manager running.
+    """
+    uid = os.getuid()
+    unit = Path(f'/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service')
+
+    try:
+        return frozenset((unit / 'cgroup.controllers').read_text().split())
+    except OSError:
+        return frozenset()
 
 
 def machine_memory_bytes() -> int:
