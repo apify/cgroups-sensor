@@ -187,3 +187,35 @@ def test_pod_without_limits() -> None:
     check_invariants(reading)
     assert reading.memory_limit is None
     assert reading.cpu_limit is None
+
+
+def test_guaranteed_pod() -> None:
+    """Reads the limits of a pod whose requests equal its limits, the class kubelet puts in a cgroup apart."""
+    reading = probe_in_pod(
+        {
+            'requests': {'cpu': '500m', 'memory': str(MEMORY_LIMIT)},
+            'limits': {'cpu': '500m', 'memory': str(MEMORY_LIMIT)},
+        }
+    )
+
+    check_invariants(reading)
+    assert reading.memory_limit == MEMORY_LIMIT
+    assert reading.cpu_limit == 0.5
+
+
+def test_pod_limited_on_memory_only() -> None:
+    """Reads a memory limit where the pod caps nothing else, so no CPU limit is reported."""
+    reading = probe_in_pod({'limits': {'memory': str(MEMORY_LIMIT)}})
+
+    check_invariants(reading)
+    assert reading.memory_limit == MEMORY_LIMIT
+    assert reading.cpu_limit is None
+
+
+def test_pod_limited_on_cpu_only() -> None:
+    """The mirror image of the test above."""
+    reading = probe_in_pod({'limits': {'cpu': '500m'}})
+
+    check_invariants(reading)
+    assert reading.cpu_limit == 0.5
+    assert reading.memory_limit is None

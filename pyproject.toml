@@ -104,8 +104,9 @@ addopts = "-r a --verbose --strict-markers --strict-config"
 filterwarnings = ["error"]
 markers = [
     "unified: needs the resource controllers on the cgroup v2 unified hierarchy; cgroup v1 lanes exclude it",
-    "systemd_slices: needs docker to place containers under systemd slices; cgroup v1 lanes exclude it",
+    "systemd_slices: needs the engine to place containers under systemd slices, not to drive cgroups itself",
     "kubernetes: needs kind and kubectl; only the kubernetes lane runs these",
+    "podman: needs podman and a systemd user manager delegating cpu and memory; the lanes without it exclude it",
 ]
 # The e2e readings carry a dozen fields, and a truncated one hides the number that explains the failure.
 verbosity_assertions = 2
