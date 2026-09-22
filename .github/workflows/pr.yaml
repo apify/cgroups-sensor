@@ -19,4 +19,4 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check the pull request title
-        uses: apify/actions/pr-title-check@v1.5.0
+        uses: apify/actions/pr-title-check@v1.6.1
